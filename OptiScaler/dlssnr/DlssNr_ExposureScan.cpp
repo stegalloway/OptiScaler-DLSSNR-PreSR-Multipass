@@ -48,6 +48,14 @@ bool PlausibleFormat(DXGI_FORMAT f, unsigned int* outBytes, const char** outName
         *outBytes = 2;
         *outName = "R16G16_FLOAT";
         return true;
+    case DXGI_FORMAT_R11G11B10_FLOAT:
+        *outBytes = 4; // packed 11/11/10 float; readback decodes the R channel explicitly
+        *outName = "R11G11B10_FLOAT";
+        return true;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        *outBytes = 2; // first (R) half-float channel
+        *outName = "R16G16B16A16_FLOAT";
+        return true;
     default:
         return false;
     }
@@ -135,18 +143,21 @@ void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int byte
             return;
     }
 
-    if (g_scan.tracked.size() >= kMaxCandidates)
+    const size_t bufferCandidates = std::count_if(g_scan.tracked.begin(), g_scan.tracked.end(),
+                                                   [](const Tracked& t) { return t.isBuffer; });
+    if (isBuffer && bufferCandidates >= kMaxBufferCandidates)
     {
         if (!g_scan.complained)
         {
             g_scan.complained = true;
-            LOG_WARN("DLSS-NR exposure scan: more than {} candidates, so the filter is too loose here "
-                     "rather than the game having {} exposures",
-                     kMaxCandidates, kMaxCandidates);
+            LOG_WARN("DLSS-NR exposure scan: generic buffer reserve reached at {}; keeping {} slots available for float textures",
+                     kMaxBufferCandidates, kMaxCandidates - kMaxBufferCandidates);
         }
-
         return;
     }
+
+    if (g_scan.tracked.size() >= kMaxCandidates)
+        return;
 
     Tracked t;
     t.resource = resource;
@@ -240,10 +251,167 @@ void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* d
     Adopt(resource, shape, bytes, isBuffer, fmt);
 }
 
-// How many frames of watching without movement before saying so. At sixty frames a second this is
-// about half a minute, which is long enough to have walked somewhere with different light in it and
-// short enough that nobody waits on it wondering.
+// How many frames of watching without a validated source before saying so.
 constexpr unsigned int kPatience = 1800;
+
+static float CandidateDriveCeiling(const Tracked& t)
+{
+    return t.isBuffer ? kBufferDriveCeiling : kTextureDriveCeiling;
+}
+
+static bool CandidateUsable(const Tracked& t)
+{
+    const float ceiling = CandidateDriveCeiling(t);
+    if (t.rejected || !t.moves || t.inRange < kMinDriveReads || t.saneStreak < kMinDriveStreak ||
+        t.latest < kDriveFloor || t.latest > ceiling || t.lowest < kDriveFloor || t.highest > ceiling)
+        return false;
+
+    if (g_scan.frames > t.lastSaneFrame + kCandidateStaleFrames)
+        return false;
+
+    return true;
+}
+
+static float CandidateConfidence(const Tracked& t)
+{
+    if (!CandidateUsable(t))
+        return -10000.0f;
+
+    const float ratio = std::max(1.0f, t.highest / std::max(t.lowest, kDriveFloor));
+    float score = std::min(std::log2(ratio), 4.0f) * 1.25f;
+    score += std::min((float) t.inRange, 120.0f) / 30.0f;
+
+    // Eye adaptation is most commonly a tiny floating-point texture. Anonymous buffers remain valid
+    // for engines that use them, but should not win merely because they were created first.
+    if (!t.isBuffer)
+    {
+        score += 6.0f;
+        if (t.shape.rfind("1x1 ", 0) == 0)
+            score += 6.0f;
+        if (t.shape.find("R11G11B10_FLOAT") != std::string::npos)
+            score += 5.0f;
+        else if (t.shape == "1x1 R32_FLOAT")
+            score += 2.0f;
+    }
+    else
+    {
+        score -= 1.0f;
+        if (t.shape == "buffer, 4 bytes")
+            score -= 1.0f;
+    }
+
+    score -= std::min((float) t.invalidReads, 3.0f);
+    score -= std::min((float) t.spikeReads, 3.0f) * 2.0f;
+    return score;
+}
+
+static int BestObservedCandidateLocked()
+{
+    int best = -1;
+    float bestScore = -10000.0f;
+    for (size_t i = 0; i < g_scan.tracked.size(); ++i)
+    {
+        const float score = CandidateConfidence(g_scan.tracked[i]);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = (int) i;
+        }
+    }
+    return bestScore > -9999.0f ? best : -1;
+}
+
+// Manual calibration is intentionally less strict than automatic control. Requiring `moves` here
+// made Anchor here impossible to press before auto-lock, defeating the purpose of manual calibration.
+// A texture only needs a couple of recent sane reads. Buffers still need movement because they are
+// much more likely to be counters or unrelated constants.
+static bool CandidateAnchorUsable(const Tracked& t)
+{
+    const float ceiling = CandidateDriveCeiling(t);
+    if (t.rejected || t.inRange < 2 || t.latest < kDriveFloor || t.latest > ceiling)
+        return false;
+    if (g_scan.frames > t.lastSaneFrame + kCandidateStaleFrames)
+        return false;
+    if (t.isBuffer && !t.moves)
+        return false;
+    return true;
+}
+
+static float CandidateAnchorConfidence(const Tracked& t)
+{
+    if (!CandidateAnchorUsable(t))
+        return -10000.0f;
+
+    float score = std::min((float) t.inRange, 120.0f) / 20.0f;
+    if (t.moves)
+        score += 4.0f;
+
+    if (!t.isBuffer)
+    {
+        score += 8.0f;
+        if (t.shape.rfind("1x1 ", 0) == 0)
+            score += 8.0f;
+        if (t.shape.find("R11G11B10_FLOAT") != std::string::npos)
+            score += 8.0f; // known-good Spider-Man exposure format
+        else if (t.shape.find("R32_FLOAT") != std::string::npos)
+            score += 4.0f;
+        else if (t.shape.find("R16_FLOAT") != std::string::npos)
+            score += 2.0f;
+    }
+    else
+    {
+        score -= 4.0f;
+    }
+
+    score -= std::min((float) t.invalidReads, 3.0f);
+    score -= std::min((float) t.spikeReads, 3.0f);
+    return score;
+}
+
+static int BestManualAnchorCandidateLocked()
+{
+    int best = -1;
+    float bestScore = -10000.0f;
+    for (size_t i = 0; i < g_scan.tracked.size(); ++i)
+    {
+        const float score = CandidateAnchorConfidence(g_scan.tracked[i]);
+        if (score > bestScore)
+        {
+            bestScore = score;
+            best = (int) i;
+        }
+    }
+    return bestScore > -9999.0f ? best : -1;
+}
+
+static int SelectCandidateLocked()
+{
+    if (g_scan.activeCandidate >= 0 && g_scan.activeCandidate < (int) g_scan.tracked.size() &&
+        CandidateUsable(g_scan.tracked[g_scan.activeCandidate]))
+        return g_scan.activeCandidate;
+
+    g_scan.activeCandidate = -1;
+    const int best = BestObservedCandidateLocked();
+    if (best < 0)
+    {
+        g_scan.selectionReadyFrame = 0;
+        return -1;
+    }
+
+    // Do not lock the first merely-usable buffer immediately. HITMAN exposes its real 1x1 R32_FLOAT
+    // just after a small generic buffer starts moving. Two seconds of observation lets the texture
+    // accumulate enough evidence to outrank it without allowing source hopping after lock.
+    if (g_scan.selectionReadyFrame == 0)
+        g_scan.selectionReadyFrame = g_scan.frames + kSelectionGraceFrames;
+    if (g_scan.frames < g_scan.selectionReadyFrame)
+        return -1;
+
+    g_scan.activeCandidate = best;
+    const Tracked& t = g_scan.tracked[best];
+    LOG_INFO("DLSS-NR exposure scan: locked validated candidate {} ({}) score {:.2f}, range {:.5f}..{:.5f}",
+             best + 1, t.shape, CandidateConfidence(t), t.lowest, t.highest);
+    return best;
+}
 
 Verdict Where()
 {
@@ -251,138 +419,95 @@ Verdict Where()
         return Verdict::Off;
 
     std::lock_guard<std::mutex> lock(g_scanMutex);
-
     if (g_scan.tracked.empty())
         return Verdict::Waiting;
+    if (SelectCandidateLocked() >= 0)
+        return Verdict::Found;
 
     unsigned int mostReads = 0;
-
     for (const Tracked& t : g_scan.tracked)
-    {
-        if (t.moves)
-            return Verdict::Found;
-
         mostReads = std::max(mostReads, t.reads);
-    }
-
     return mostReads >= kPatience ? Verdict::Barren : Verdict::Watching;
 }
 
 const char* Headline()
 {
     static std::string line;
-
     switch (Where())
     {
-    case Verdict::Off:
-        line = "";
-        break;
-
+    case Verdict::Off: line = ""; break;
     case Verdict::Waiting:
     {
-        // The examined count is the whole diagnosis. Zero means the hook is not running and no
-        // amount of playing will change that; a large number means the game genuinely has nothing
-        // shaped like an exposure, which is an answer rather than a failure.
         const unsigned int seen = Examined();
         line = seen == 0 ? "DLSS-NR exposure scan: NOT RUNNING -- no resources seen at all"
                          : "DLSS-NR exposure scan: examined " + std::to_string(seen) +
                                " resources, none shaped like an exposure";
         break;
     }
-
     case Verdict::Watching:
     {
         std::lock_guard<std::mutex> lock(g_scanMutex);
         unsigned int mostReads = 0;
-
         for (const Tracked& t : g_scan.tracked)
             mostReads = std::max(mostReads, t.reads);
-
-        line = "DLSS-NR exposure scan: watching " + std::to_string(g_scan.tracked.size()) +
-               ", none moving yet -- walk between light and shade  (" +
-               std::to_string(mostReads * 100 / kPatience) + "%)";
+        line = "DLSS-NR exposure scan: validating " + std::to_string(g_scan.tracked.size()) +
+               " candidates; manual anchor remains available before auto-lock  (" +
+               std::to_string(std::min(100u, mostReads * 100 / kPatience)) + "%)";
         break;
     }
-
     case Verdict::Found:
     {
         std::lock_guard<std::mutex> lock(g_scanMutex);
-
-        // The widest travel wins where several move. An exposure swings by orders of magnitude
-        // between a dark interior and open daylight; anything that merely wobbles is something else.
-        size_t best = 0;
-        float bestRatio = 0.0f;
-
-        for (size_t i = 0; i < g_scan.tracked.size(); ++i)
-        {
-            const Tracked& t = g_scan.tracked[i];
-
-            if (!t.moves || t.lowest <= kFloor)
-                continue;
-
-            const float ratio = t.highest / t.lowest;
-
-            if (ratio > bestRatio)
-            {
-                bestRatio = ratio;
-                best = i;
-            }
-        }
-
-        char buf[192];
-        // The live value is in here so the line visibly ticks. Without it the indicator looks stuck
-        // the moment the range settles, which is exactly when it has succeeded.
+        const int best = SelectCandidateLocked();
+        if (best < 0) { line = "DLSS-NR exposure scan: validating candidates"; break; }
+        const Tracked& t = g_scan.tracked[best];
+        const float ratio = t.highest / std::max(t.lowest, kDriveFloor);
+        char buf[208];
         snprintf(buf, sizeof(buf),
-                 "DLSS-NR exposure scan: FOUND -- candidate %zu = %.5f  (%.5f..%.5f, x%.0f)  done",
-                 best + 1, g_scan.tracked[best].latest, g_scan.tracked[best].lowest,
-                 g_scan.tracked[best].highest, bestRatio);
+                 "DLSS-NR exposure scan: VALIDATED -- candidate %d = %.5f  (%.5f..%.5f, x%.1f)  locked",
+                 best + 1, t.latest, t.lowest, t.highest, ratio);
         line = buf;
         break;
     }
-
-    case Verdict::Barren:
-        line = "DLSS-NR exposure scan: nothing moved. No exposure to find here.";
-        break;
+    case Verdict::Barren: line = "DLSS-NR exposure scan: no validated exposure source found."; break;
     }
-
     return line.c_str();
 }
 
 float BestValue(int* outIndex, float* outLowest, float* outHighest)
 {
     std::lock_guard<std::mutex> lock(g_scanMutex);
+    const int best = SelectCandidateLocked();
+    if (best < 0)
+        return 0.0f;
+    if (outIndex != nullptr) *outIndex = best + 1;
+    if (outLowest != nullptr) *outLowest = g_scan.tracked[best].lowest;
+    if (outHighest != nullptr) *outHighest = g_scan.tracked[best].highest;
+    return g_scan.tracked[best].latest;
+}
 
-    int best = -1;
-    float bestRatio = 0.0f;
+float BestAnchorValue(int* outIndex, float* outLowest, float* outHighest)
+{
+    std::lock_guard<std::mutex> lock(g_scanMutex);
+    const int best = BestManualAnchorCandidateLocked();
 
-    for (size_t i = 0; i < g_scan.tracked.size(); ++i)
+    static int lastLoggedCandidate = -2;
+    if (best != lastLoggedCandidate)
     {
-        const Tracked& t = g_scan.tracked[i];
-
-        if (!t.moves || t.lowest <= kFloor)
-            continue;
-
-        const float ratio = t.highest / t.lowest;
-
-        if (ratio > bestRatio)
+        lastLoggedCandidate = best;
+        if (best >= 0)
         {
-            bestRatio = ratio;
-            best = (int) i;
+            const Tracked& t = g_scan.tracked[best];
+            LOG_INFO("DLSS-NR exposure scan: manual anchor candidate {} ({}) = {:.5f}, sane reads {}, moves {}",
+                     best + 1, t.shape, t.latest, t.inRange, t.moves);
         }
     }
 
     if (best < 0)
         return 0.0f;
-
-    if (outIndex != nullptr)
-        *outIndex = best + 1;
-
-    if (outLowest != nullptr)
-        *outLowest = g_scan.tracked[best].lowest;
-
-    if (outHighest != nullptr)
-        *outHighest = g_scan.tracked[best].highest;
-
+    if (outIndex != nullptr) *outIndex = best + 1;
+    if (outLowest != nullptr) *outLowest = g_scan.tracked[best].lowest;
+    if (outHighest != nullptr) *outHighest = g_scan.tracked[best].highest;
     return g_scan.tracked[best].latest;
 }
 

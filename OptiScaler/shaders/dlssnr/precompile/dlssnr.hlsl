@@ -35,6 +35,8 @@ cbuffer Params : register(b0)
     float gSkinColour;
     float gEnvironmentDetail;
     float gEnvironmentColour;
+    // In the normal NR shader this aliases DlssNrConstants::ResidualBlend, unused by this PSO.
+    float gShadowFloor;
 };
 
 // Bringing an impossible colour back into a possible one.
@@ -1044,7 +1046,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
     // distorter -- on a saturated pixel the smallest channel reaches the bound first, so an
     // achromatic edit lands as a colour shift.
     const float guard = max(gMaxRatio, 1.0);
-    float boundedRatio = clamp(amplified, 1.0 / guard, guard);
+    const float stockShadowFloor = 1.0 / guard;
+    const float shadowFloor = gShadowFloor > 0.0 ? clamp(gShadowFloor, stockShadowFloor, 1.0) : stockShadowFloor;
+    float boundedRatio = clamp(amplified, shadowFloor, guard);
 
     // Exactly one while the ratio is already inside the guard, so a frame that never needed bounding
     // is untouched rather than rounded, and strength zero stays bit-identical.

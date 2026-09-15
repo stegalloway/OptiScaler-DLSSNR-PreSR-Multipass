@@ -117,6 +117,17 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
     localPref.logLevel = sl::LogLevel::eCount;
     localPref.logMessageCallback = &streamlineLogCallback;
 
+#if defined(OPTISCALER_RTX40_MFG)
+    // Legacy hosts can allow OTA discovery/update while omitting eLoadDownloadedPlugins.
+    // With Ada MFG unlock enabled, load NVIDIA's downloaded Streamline plugins before
+    // any FG route selection so modern sl.dlss_g can expose all five generated frames.
+    if (Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default())
+    {
+        localPref.flags |= sl::PreferenceFlags::eLoadDownloadedPlugins;
+        LOG_INFO("RTX40 MFG legacy Streamline: eLoadDownloadedPlugins enabled before FG route selection");
+    }
+#endif
+
     // renderAPI is optional so need to be careful, should only matter for Vulkan
     renderApi = localPref.renderAPI;
 

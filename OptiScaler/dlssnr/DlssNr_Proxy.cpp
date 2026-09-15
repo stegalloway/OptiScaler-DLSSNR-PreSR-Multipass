@@ -166,7 +166,7 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
     if (state.feature == nullptr)
     {
         NgxDiagnostics::Scope nrCreateTrace;
-        NgxDiagnostics::RuntimeReport(cmdList, device, "before CreateFeature(18)");
+        LOG_INFO("NR compatibility: runtime file diagnostics bypassed before CreateFeature(18)");
         LOG_INFO("NR diagnostic creation: {}x{}, preset={}, style={}, intensity={}, structure={}, tone={}, "
                  "skin={}, autoMask={}, node masks=1/1, UI correction=1, UI/control/backbuffer=null, epoch={}",
                  width, height, settings.preset, settings.style, settings.intensity, settings.localStructure,
@@ -188,7 +188,7 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
                          (unsigned)created, (void*)state.feature);
             }
         }
-        NgxDiagnostics::RuntimeReport(cmdList, device, "after CreateFeature(18)");
+        LOG_INFO("NR compatibility: runtime file diagnostics bypassed after CreateFeature(18)");
 
         if (created != NVSDK_NGX_Result_Success || state.feature == nullptr)
         {

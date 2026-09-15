@@ -40,6 +40,7 @@ struct ID3D12Device;
 struct ID3D12Resource;
 struct ID3D12GraphicsCommandList;
 struct D3D12_UNORDERED_ACCESS_VIEW_DESC;
+struct D3D12_RESOURCE_BARRIER;
 
 namespace DlssNr
 {
@@ -70,6 +71,11 @@ void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* d
 // view is made through a descriptor copy rather than through CreateUnorderedAccessView.
 void NoteResource(const D3D12_RESOURCE_DESC* desc, ID3D12Resource* resource);
 
+// Called by the D3D12 ResourceBarrier hook. The scanner never guesses a resource state:
+// it captures only immediately before a non-split transition whose StateBefore is explicitly UAV.
+void NoteBarriers(ID3D12GraphicsCommandList* commandList, unsigned int numBarriers,
+                  const D3D12_RESOURCE_BARRIER* barriers);
+
 // How many resources have been looked at. The number that distinguishes "this game has no exposure
 // buffer" from "the hook is not running", which are the same empty list and very different problems.
 unsigned int Examined();
@@ -79,6 +85,8 @@ unsigned int Examined();
 // line -- which is the only way to tell, offline and after the fact, whether the scan found the
 // right buffer or merely a moving one.
 float BestValue(int* outIndex = nullptr, float* outLowest = nullptr, float* outHighest = nullptr);
+// Best recent sane candidate for explicit user anchoring. Unlike BestValue this does not require movement or auto-lock.
+float BestAnchorValue(int* outIndex = nullptr, float* outLowest = nullptr, float* outHighest = nullptr);
 
 // Called from the Neural Rendering pass. The shared scanner follows the first rendering device
 // until Shutdown; other devices are skipped. An epoch suppresses repeated passes/owners in one frame.

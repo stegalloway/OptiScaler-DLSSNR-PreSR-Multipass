@@ -93,7 +93,7 @@ void RenderInput(Config* config, float menuResScale)
                 config->DlssNrWhitePointSource = (uint32_t) source;
             }
 
-            HelpMarker("Game exposure uses supplied data. Scanned exposure requires calibration and may select the wrong buffer.");
+            HelpMarker("Game exposure uses supplied data. Scanned exposure validates sane readings, rejects junk/outliers and locks one source before it can drive NR.");
             if (source == 1)
             {
                 if (!vk && ex.seenFrames == 0)
@@ -244,7 +244,7 @@ void RenderInput(Config* config, float menuResScale)
             {
                 int which = 0;
                 float low = 0.0f, high = 0.0f;
-                const float live = DlssNr::ExposureScan::BestValue(&which, &low, &high);
+                const float live = DlssNr::ExposureScan::BestAnchorValue(&which, &low, &high);
 
                 const bool isSource = config->DlssNrWhitePointSource.value_or_default() == 2;
                 ImGui::BeginDisabled(live <= 0.0f || !isSource);

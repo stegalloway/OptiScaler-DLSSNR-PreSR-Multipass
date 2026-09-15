@@ -82,7 +82,17 @@ void RenderBlend(Config* config, float menuResScale)
     if (ImGui::SmallButton("Reset##guard"))
         config->DlssNrMaxRatio = 2.0f;
 
-    HelpMarker("Limit pixel brightening and darkening.");
+    HelpMarker("Maximum NR brightening. Shadow darkening is controlled separately below.");
+
+    float shadowFloor = std::clamp(config->DlssNrShadowFloor.value_or_default(), 0.0f, 1.0f);
+    if (ImGui::SliderFloat("Shadow minimum", &shadowFloor, 0.0f, 1.0f, "%.2fx"))
+        config->DlssNrShadowFloor = shadowFloor;
+
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reset##shadowfloor"))
+        config->DlssNrShadowFloor = 0.0f;
+
+    HelpMarker("Minimum luminance NR may leave relative to the untouched frame. 0.80x = at most 20% darkening. 1.00x = no NR darkening. 0 = stock.");
 }
 
 void RenderInspect(Config* config, float menuResScale)

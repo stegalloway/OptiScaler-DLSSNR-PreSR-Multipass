@@ -161,6 +161,7 @@ auto DlssNr_Dx12::State::ApplyFinishedColor(ID3D12Resource* color, ID3D12Command
             apply.WhitePoint = slot.frame.PreExposure;
             apply.TransferStrength = slot.sceneLinear ? 1.0f : 0.0f;
             apply.MaxRatio = std::clamp(Config::Instance()->DlssNrMaxRatio.value_or_default(), 1.0f, 8.0f);
+            apply.MvScaleX = std::clamp(Config::Instance()->DlssNrShadowFloor.value_or_default(), 0.0f, 1.0f); // finished shader alias
             const bool measure = Config::Instance()->DlssNrHdrTransfer.value_or_default() && slot.cleanSceneValid &&
                                  slot.sceneLinear && (pq || scrgb);
             if (measure)

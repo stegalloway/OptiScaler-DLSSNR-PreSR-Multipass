@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "SysUtils.h"
 #include "State.h"
@@ -342,6 +342,8 @@ class Config
     // The most the pass may multiply or divide a pixel by. A detail pass has no business restyling a
     // light source, whatever the model returns.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
+    // Minimum relative brightness NR may leave. 0 keeps stock MaxRatio darkening behaviour.
+    CustomOptional<float> DlssNrShadowFloor { 0.0f };
 
     // Below 100%: 0 classic, 1 spatial matched residual, 2 private DLSS SR matched residual.
     // Mode 2 requires post-upscale processing through DX12 (including finished-picture NR).

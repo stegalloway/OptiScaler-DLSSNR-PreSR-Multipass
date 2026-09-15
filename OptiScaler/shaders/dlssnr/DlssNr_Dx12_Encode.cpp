@@ -293,6 +293,7 @@ DlssNrConstants DlssNr_Dx12::State::MakeResolveConstants(const EncodeContext& co
     resolveParams.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
     resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
     resolveParams.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
+    resolveParams.ResidualBlend = std::clamp(cfg.DlssNrShadowFloor.value_or_default(), 0.0f, 1.0f); // gShadowFloor alias
     resolveParams.Transfer = std::min(cfg.DlssNrTransfer.value_or_default(), 1u);
     resolveParams.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
     resolveParams.Passthrough = isHdrBuffer ? 0u : 1u;

@@ -18,6 +18,8 @@ namespace Detail
 ScanState g_scan;
 std::mutex g_scanMutex;
 std::mutex g_tickMutex;
+// Prevent our injected UAV->COPY_SOURCE->UAV barriers recursively re-entering the capture hook.
+thread_local bool g_scanBarrierInjection = false;
 float HalfToFloat(uint16_t h)
 {
     const uint32_t sign = (uint32_t) (h & 0x8000u) << 16;
@@ -57,6 +59,21 @@ float HalfToFloat(uint16_t h)
     float out;
     std::memcpy(&out, &bits, sizeof(out));
     return out;
+}
+
+float R11ToFloat(uint32_t packed)
+{
+    const uint32_t v = packed & 0x7FFu;
+    const uint32_t exponent = (v >> 6) & 0x1Fu;
+    const uint32_t mantissa = v & 0x3Fu;
+
+    if (exponent == 0)
+        return std::ldexp((float) mantissa, -20); // 2^(1-15-6)
+
+    if (exponent == 31)
+        return kCeiling; // infinity/NaN: sample gate will reject it
+
+    return std::ldexp((float) (64u + mantissa), (int) exponent - 21);
 }
 
 void Barrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* res, D3D12_RESOURCE_STATES from,
@@ -117,10 +134,139 @@ bool EnsureReadback(ID3D12Device* device)
 // panel.
 }
 using namespace Detail;
+
+void NoteBarriers(ID3D12GraphicsCommandList* commandList, unsigned int numBarriers,
+                  const D3D12_RESOURCE_BARRIER* barriers)
+{
+    if (!Wanted() || g_scanBarrierInjection || commandList == nullptr || barriers == nullptr || numBarriers == 0)
+        return;
+
+    // Keep all scan copies on a direct command list. Compute/copy-queue candidates are skipped rather
+    // than creating cross-queue ownership/synchronisation that the scanner cannot prove safe.
+    if (commandList->GetType() != D3D12_COMMAND_LIST_TYPE_DIRECT)
+        return;
+
+    // Never stall the game's command-recording threads behind the scanner. Missing one opportunity is
+    // harmless: another UAV transition can be sampled later. Crucially, no stale state is remembered.
+    std::unique_lock<std::mutex> lock(g_scanMutex, std::try_to_lock);
+    if (!lock.owns_lock() || g_scan.tracked.empty())
+        return;
+
+    if (!g_scan.captureActive)
+    {
+        g_scan.captureActive = true;
+        g_scan.frames = 0;
+        g_scan.writeSlot = 0;
+        std::fill(std::begin(g_scan.readbackCounts), std::end(g_scan.readbackCounts), 0);
+        std::fill(std::begin(g_scan.readbackValid), std::end(g_scan.readbackValid), 0);
+        std::fill(std::begin(g_scan.readbackWriter), std::end(g_scan.readbackWriter), nullptr);
+    }
+
+    const unsigned int slot = g_scan.writeSlot;
+    ID3D12Resource* dst = g_scan.readback[slot];
+    if (dst == nullptr)
+        return; // Tick allocates the readback ring; capture starts on a later frame.
+
+    // A readback slot has exactly one command-list writer. This avoids unsynchronised writes to the
+    // same readback resource from multiple game command lists/queues in one frame.
+    if (g_scan.readbackWriter[slot] != nullptr && g_scan.readbackWriter[slot] != commandList)
+        return;
+
+    static_assert(kMaxCandidates <= 64, "readbackValid uses one uint64_t bit per candidate");
+
+    for (unsigned int barrierIndex = 0; barrierIndex < numBarriers; ++barrierIndex)
+    {
+        const D3D12_RESOURCE_BARRIER& b = barriers[barrierIndex];
+        if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || b.Flags != D3D12_RESOURCE_BARRIER_FLAG_NONE ||
+            b.Transition.pResource == nullptr ||
+            b.Transition.StateBefore != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+            continue;
+
+        for (size_t i = 0; i < g_scan.tracked.size(); ++i)
+        {
+            Tracked& t = g_scan.tracked[i];
+            if (t.resource != b.Transition.pResource || t.resource == nullptr)
+                continue;
+
+            // For textures we copy subresource 0. A transition for some other subresource tells us
+            // nothing about subresource 0, so skip it. Buffers have a single logical subresource.
+            if (!t.isBuffer && b.Transition.Subresource != D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES &&
+                b.Transition.Subresource != 0)
+                break;
+
+            const uint64_t bit = uint64_t(1) << i;
+            if ((g_scan.readbackValid[slot] & bit) != 0)
+                break; // one sample per candidate per frame is enough
+
+            g_scanBarrierInjection = true;
+            Barrier(commandList, t.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+            if (t.isBuffer)
+            {
+                commandList->CopyBufferRegion(dst, i * kStride, t.resource, 0, t.bytes);
+            }
+            else
+            {
+                D3D12_TEXTURE_COPY_LOCATION src {};
+                src.pResource = t.resource;
+                src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                src.SubresourceIndex = 0;
+
+                D3D12_TEXTURE_COPY_LOCATION to {};
+                to.pResource = dst;
+                to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                to.PlacedFootprint.Offset = i * kStride;
+                to.PlacedFootprint.Footprint.Format = t.texFormat;
+                to.PlacedFootprint.Footprint.Width = 1;
+                to.PlacedFootprint.Footprint.Height = 1;
+                to.PlacedFootprint.Footprint.Depth = 1;
+                to.PlacedFootprint.Footprint.RowPitch = 256;
+
+                D3D12_BOX one { 0, 0, 0, 1, 1, 1 };
+                commandList->CopyTextureRegion(&to, 0, 0, 0, &src, &one);
+            }
+
+            Barrier(commandList, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            g_scanBarrierInjection = false;
+
+            g_scan.readbackWriter[slot] = commandList;
+            g_scan.readbackValid[slot] |= bit;
+            g_scan.readbackCounts[slot] = std::max(g_scan.readbackCounts[slot], i + 1);
+            break;
+        }
+    }
+}
+
 void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t submissionEpoch)
 {
     if (!Wanted())
+    {
+        // Tick still runs while NR is active. Clear capture metadata on the off edge so a later
+        // re-enable cannot consume stale slots or suppress new samples with old validity bits.
+        std::lock_guard<std::mutex> offLock(g_scanMutex);
+        if (g_scan.captureActive)
+        {
+            g_scan.captureActive = false;
+            g_scan.frames = 0;
+            g_scan.writeSlot = 0;
+            std::fill(std::begin(g_scan.readbackCounts), std::end(g_scan.readbackCounts), 0);
+            std::fill(std::begin(g_scan.readbackValid), std::end(g_scan.readbackValid), 0);
+            std::fill(std::begin(g_scan.readbackWriter), std::end(g_scan.readbackWriter), nullptr);
+            g_scan.activeCandidate = -1;
+            g_scan.selectionReadyFrame = 0;
+            for (Tracked& t : g_scan.tracked)
+            {
+                t.latest = t.lowest = t.highest = t.lastSane = 0.0f;
+                t.reads = t.inRange = t.saneStreak = t.invalidReads = t.spikeReads = 0;
+                t.lastSaneFrame = 0;
+                t.rejected = false;
+                t.moves = false;
+            }
+        }
         return;
+    }
 
     if (device == nullptr || cmdList == nullptr)
         return;
@@ -156,6 +302,22 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
 
     std::lock_guard<std::mutex> lock(g_scanMutex);
 
+    if (!g_scan.captureActive)
+    {
+        g_scan.captureActive = true;
+        g_scan.frames = 0;
+        g_scan.writeSlot = 0;
+        std::fill(std::begin(g_scan.readbackCounts), std::end(g_scan.readbackCounts), 0);
+        std::fill(std::begin(g_scan.readbackValid), std::end(g_scan.readbackValid), 0);
+        std::fill(std::begin(g_scan.readbackWriter), std::end(g_scan.readbackWriter), nullptr);
+    }
+
+    if (!g_scan.safeCaptureLogged)
+    {
+        LOG_INFO("DLSS-NR exposure scan: safe UAV-barrier capture active; unknown/split states are skipped");
+        g_scan.safeCaptureLogged = true;
+    }
+
     if (g_scan.tracked.empty())
     {
         g_scan.status = "no buffer in this game is shaped like an exposure";
@@ -163,11 +325,13 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
     }
     g_scan.lastEpoch = submissionEpoch;
 
-    // Read the slot written four frames ago before overwriting it. Retired by now, so this reads
-    // mapped memory rather than waiting on the GPU.
+    // Barrier capture writes earlier in the frame. Read the slot which will be reused next frame;
+    // with five slots it is four complete frames old and therefore not the slot the GPU is writing now.
     if (g_scan.frames >= kSlots)
     {
-        ID3D12Resource* old = g_scan.readback[g_scan.frames % kSlots];
+        const unsigned int readSlot = (g_scan.writeSlot + 1) % kSlots;
+        ID3D12Resource* old = g_scan.readback[readSlot];
+        const uint64_t validMask = g_scan.readbackValid[readSlot];
         void* mapped = nullptr;
         D3D12_RANGE range { 0, kStride * kMaxCandidates };
 
@@ -175,15 +339,24 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
         {
             const unsigned char* base = (const unsigned char*) mapped;
 
-            const auto readableCount = std::min(g_scan.tracked.size(), g_scan.readbackCounts[g_scan.frames % kSlots]);
+            const auto readableCount = std::min(g_scan.tracked.size(), g_scan.readbackCounts[readSlot]);
             for (size_t i = 0; i < readableCount; ++i)
             {
+                if ((validMask & (uint64_t(1) << i)) == 0)
+                    continue; // never interpret an uncopied/skipped candidate as stale exposure data
+
                 Tracked& t = g_scan.tracked[i];
                 const unsigned char* at = base + i * kStride;
 
                 float value = 0.0f;
 
-                if (t.bytes == 2)
+                if (!t.isBuffer && t.texFormat == DXGI_FORMAT_R11G11B10_FLOAT)
+                {
+                    uint32_t packed = 0;
+                    std::memcpy(&packed, at, sizeof(packed));
+                    value = R11ToFloat(packed);
+                }
+                else if (t.bytes == 2)
                 {
                     uint16_t half = 0;
                     std::memcpy(&half, at, sizeof(half));
@@ -194,23 +367,58 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
                     std::memcpy(&value, at, sizeof(value));
                 }
 
-                if (!std::isfinite(value))
+                t.reads++;
+
+                if (t.rejected)
                     continue;
 
-                // Only values that could BE an exposure are allowed into the range, and this is
-                // the whole of "8 watching, none moving" never changing.
-                //
-                // A buffer is usually zero the first time it is read -- created but not yet
-                // written, or read a frame before the game fills it. That zero became `lowest`,
-                // and since movement is a ratio guarded by `lowest > kFloor`, one early zero
-                // disqualified that candidate for the rest of the session however the light
-                // changed. The range has to be built from plausible samples, not from whichever
-                // sample happened to be first.
-                if (value <= kFloor || value >= kCeiling)
+                const float driveCeiling = t.isBuffer ? kBufferDriveCeiling : kTextureDriveCeiling;
+                if (!std::isfinite(value) || value < kDriveFloor || value > driveCeiling)
                 {
-                    t.latest = value;
-                    t.reads++;
+                    t.invalidReads++;
+                    t.saneStreak = 0;
+
+                    const bool hardSentinel = std::isfinite(value) && value >= kHardSentinel;
+                    if (hardSentinel || t.invalidReads >= kRejectInvalidReads)
+                    {
+                        t.rejected = true;
+                        t.moves = false;
+                        if (g_scan.activeCandidate == (int) i)
+                        {
+                            g_scan.activeCandidate = -1;
+                            g_scan.selectionReadyFrame = g_scan.frames + kSelectionGraceFrames;
+                        }
+                        LOG_WARN("DLSS-NR exposure scan: candidate {} ({}) rejected as junk: value {:.5f}, invalid reads {}",
+                                 (unsigned int) (i + 1), t.shape, value, t.invalidReads);
+                    }
                     continue;
+                }
+
+                // Anonymous buffers frequently contain counters/sentinels, so large one-sample jumps
+                // remain suspicious there. Tiny float textures are different: real eye adaptation can
+                // jump by well over 8x between loading screens, interiors and daylight. Rejecting those
+                // jumps permanently is what made Spider-Man's real candidates disappear.
+                if (t.isBuffer && t.lastSane > 0.0f)
+                {
+                    const float step = std::max(value / t.lastSane, t.lastSane / value);
+                    if (step > kMaxBufferSingleStep)
+                    {
+                        t.spikeReads++;
+                        t.saneStreak = 0;
+                        if (t.spikeReads >= kRejectSpikeReads)
+                        {
+                            t.rejected = true;
+                            t.moves = false;
+                            if (g_scan.activeCandidate == (int) i)
+                            {
+                                g_scan.activeCandidate = -1;
+                                g_scan.selectionReadyFrame = g_scan.frames + kSelectionGraceFrames;
+                            }
+                            LOG_WARN("DLSS-NR exposure scan: buffer candidate {} ({}) rejected after {} >{:.1f}x spikes",
+                                     (unsigned int) (i + 1), t.shape, t.spikeReads, kMaxBufferSingleStep);
+                        }
+                        continue;
+                    }
                 }
 
                 if (t.inRange == 0)
@@ -225,21 +433,16 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
                 }
 
                 t.inRange++;
-
-                // "Moves" is the whole point of the readout, and the first version of this test
-                // was wrong in a way that mattered: a spread of ten percent of the highest value
-                // seen is a threshold of zero when the highest value seen is zero, so three buffers
-                // sitting at 0.00000 with float noise around them all reported MOVES.
-                //
-                // Ratios, not differences, and only over values that could be an exposure at all.
-                // An exposure is positive, is not a thousandth of a thousandth, and does not sit at
-                // a million. Nioh 3's real one runs 0.0019 to 0.616 -- a factor of three hundred --
-                // so a quarter is a low bar that noise cannot reach.
-                if (t.inRange > 1 && t.highest > t.lowest * 1.25f)
-                    t.moves = true;
-
+                t.saneStreak++;
+                t.lastSane = value;
+                t.lastSaneFrame = g_scan.frames;
                 t.latest = value;
-                t.reads++;
+
+                // Movement is only meaningful after the candidate has proved it can supply a run of
+                // sane readings. This prevents an early pair of unrelated values becoming the source.
+                if (t.inRange >= kMinDriveReads && t.saneStreak >= kMinDriveStreak &&
+                    t.highest > t.lowest * 1.20f)
+                    t.moves = true;
             }
 
             D3D12_RANGE nothingWritten { 0, 0 };
@@ -273,59 +476,13 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
                      (unsigned int) g_scan.tracked.size());
     }
 
-    ID3D12Resource* dst = g_scan.readback[g_scan.frames % kSlots];
-
-    if (dst == nullptr)
-        return;
-
-    // The state a candidate is in is the game's business and nothing here has a contract about it.
-    //
-    // UNORDERED_ACCESS is the assumption, and it is the reasonable one: every candidate got here by
-    // having an unordered access view created on it, which is what a compute shader writes through,
-    // and an eye adaptation buffer is written every frame and read by the next pass. It is still an
-    // assumption, which is why the whole scan is behind a setting that is off by default -- getting
-    // this wrong on someone's machine costs them a frame or a device, and nobody who has not asked
-    // for the scan should be exposed to that.
-    for (size_t i = 0; i < g_scan.tracked.size(); ++i)
-    {
-        Tracked& t = g_scan.tracked[i];
-
-        if (t.resource == nullptr)
-            continue;
-
-        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                D3D12_RESOURCE_STATE_COPY_SOURCE);
-
-        if (t.isBuffer)
-        {
-            cmdList->CopyBufferRegion(dst, i * kStride, t.resource, 0, t.bytes);
-        }
-        else
-        {
-            D3D12_TEXTURE_COPY_LOCATION src {};
-            src.pResource = t.resource;
-            src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            src.SubresourceIndex = 0;
-
-            D3D12_TEXTURE_COPY_LOCATION to {};
-            to.pResource = dst;
-            to.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-            to.PlacedFootprint.Offset = i * kStride;
-            to.PlacedFootprint.Footprint.Format = t.texFormat;
-            to.PlacedFootprint.Footprint.Width = 1;
-            to.PlacedFootprint.Footprint.Height = 1;
-            to.PlacedFootprint.Footprint.Depth = 1;
-            to.PlacedFootprint.Footprint.RowPitch = 256;
-
-            D3D12_BOX one { 0, 0, 0, 1, 1, 1 };
-            cmdList->CopyTextureRegion(&to, 0, 0, 0, &src, &one);
-        }
-
-        Barrier(cmdList, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    }
-
-    g_scan.readbackCounts[g_scan.frames % kSlots] = g_scan.tracked.size();
+    // Safe copies were recorded by NoteBarriers earlier in the frame. Retire the oldest slot and
+    // make it the destination for the NEXT frame. No game-owned resource is touched from Tick().
+    const unsigned int nextSlot = (g_scan.writeSlot + 1) % kSlots;
+    g_scan.readbackCounts[nextSlot] = 0;
+    g_scan.readbackValid[nextSlot] = 0;
+    g_scan.readbackWriter[nextSlot] = nullptr;
+    g_scan.writeSlot = nextSlot;
     g_scan.frames++;
     g_scan.status = "";
 }
@@ -357,6 +514,8 @@ void ReleaseTrackedResources()
     // The ring may still contain copies of the old candidates. Do not interpret those values
     // as newly adopted resources that happen to occupy the same list positions.
     std::fill(std::begin(g_scan.readbackCounts), std::end(g_scan.readbackCounts), 0);
+    std::fill(std::begin(g_scan.readbackValid), std::end(g_scan.readbackValid), 0);
+    std::fill(std::begin(g_scan.readbackWriter), std::end(g_scan.readbackWriter), nullptr);
 }
 
 void Shutdown()
@@ -382,7 +541,12 @@ void Shutdown()
     }
 
     g_scan.frames = 0;
+    g_scan.writeSlot = 0;
     std::fill(std::begin(g_scan.readbackCounts), std::end(g_scan.readbackCounts), 0);
+    std::fill(std::begin(g_scan.readbackValid), std::end(g_scan.readbackValid), 0);
+    std::fill(std::begin(g_scan.readbackWriter), std::end(g_scan.readbackWriter), nullptr);
+    g_scan.captureActive = false;
+    g_scan.safeCaptureLogged = false;
     g_scan.lastEpoch = UINT64_MAX;
     if (g_scan.device != nullptr)
     {

@@ -61,26 +61,31 @@ std::vector<AnchorPoint> Anchors()
 bool AnchorAdd(float scan, float white)
 {
     if (!(scan > kFloor && scan < kCeiling) || !(white > 1e-6f))
+    {
+        LOG_WARN("DLSS-NR exposure manual anchor rejected: scan {:.5f}, white {:.5f}", scan, white);
         return false;
+    }
 
     std::lock_guard<std::mutex> lock(g_anchorMutex);
-
-    // A near-duplicate scan value would make log(v_{k+1}) - log(v_k) ~ 0 and divide the interpolation
-    // by zero. Replace the existing point's white instead of adding a second at the same place.
     for (auto& p : g_anchors)
     {
         if (scan > p.scan * 0.98f && scan < p.scan * 1.02f)
         {
             p.white = white;
+            LOG_INFO("DLSS-NR exposure manual anchor replaced: scan {:.5f}, white {:.5f}", scan, white);
             return true;
         }
     }
 
     if (g_anchors.size() >= 8)
+    {
+        LOG_WARN("DLSS-NR exposure manual anchor rejected: table already has 8 points");
         return false;
+    }
 
     g_anchors.push_back({ scan, white });
     SortAnchorsLocked();
+    LOG_INFO("DLSS-NR exposure manual anchor accepted: scan {:.5f}, white {:.5f}", scan, white);
     return true;
 }
 

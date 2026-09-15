@@ -1,0 +1,60 @@
+name: Validate maintained OptiScaler v0.8.4 branches
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - shadowfloor
+      - tlou2-shadow-akane
+      - rdr2-shadow-puredark-mfg
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout branch with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Verify source tree
+        shell: pwsh
+        run: |
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }
+          Write-Host "Branch: $env:GITHUB_REF_NAME"
+          git log -1 --oneline
+
+      - name: Add MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64 RTX40 MFG
+        shell: pwsh
+        run: |
+          msbuild OptiScaler.sln /m:2 /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:OptiScalerRtx40Mfg=true /p:PostBuildEventUseInBuild=false /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE" }
+
+      - name: Locate built DLL
+        id: dll
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path . -Filter OptiScaler.dll -File -Recurse |
+            Where-Object { $_.FullName -match 'Release-RTX40-MFG' } |
+            Select-Object -First 1
+          if ($null -eq $dll) { throw 'Built RTX40-MFG OptiScaler.dll not found' }
+          "path=$($dll.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Get-FileHash $dll.FullName -Algorithm SHA256
+
+      - name: Upload validated DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiScaler-${{ github.ref_name }}-RTX40-MFG
+          path: ${{ steps.dll.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30

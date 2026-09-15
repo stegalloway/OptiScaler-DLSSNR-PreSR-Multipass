@@ -65,6 +65,7 @@ static bool _d3d12Captured = false;
 static LUID _lastAdapterLuid = {};
 
 // Common
+using PFN_ResourceBarrier = rewrite_signature<decltype(&ID3D12GraphicsCommandList::ResourceBarrier)>::type;
 using PFN_SetDescriptorHeaps = rewrite_signature<decltype(&ID3D12GraphicsCommandList::SetDescriptorHeaps)>::type;
 using PFN_SetPipelineState = rewrite_signature<decltype(&ID3D12GraphicsCommandList::SetPipelineState)>::type;
 
@@ -208,6 +209,7 @@ static std::shared_mutex rootSigParameterCountMutex;
 static ankerl::unordered_dense::map<ID3D12RootSignature*, UINT> rootSigParameterCount;
 
 static bool isUpscalerActive = false;
+static PFN_ResourceBarrier o_ResourceBarrier = nullptr;
 
 // Intel Atomic Extension
 struct UE_D3D12_RESOURCE_DESC
@@ -387,6 +389,18 @@ static void hkSetPipelineState(ID3D12GraphicsCommandList* commandList, ID3D12Pip
     }
 
     s_SetPipelineState.o_earlyHook(commandList, pPipelineState);
+}
+
+VALIDATE_HOOK(hkResourceBarrier, PFN_ResourceBarrier)
+static void hkResourceBarrier(ID3D12GraphicsCommandList* commandList, UINT NumBarriers,
+                              const D3D12_RESOURCE_BARRIER* pBarriers)
+{
+    // Capture BEFORE the game's barrier: StateBefore is the exact state the game declares at this
+    // point on this command list. NoteBarriers internally ignores split/unknown/non-UAV transitions.
+    if (commandList != nullptr && pBarriers != nullptr && NumBarriers > 0)
+        DlssNr::ExposureScan::NoteBarriers(commandList, NumBarriers, pBarriers);
+
+    o_ResourceBarrier(commandList, NumBarriers, pBarriers);
 }
 
 VALIDATE_HOOK(hkSetDescriptorHeaps, PFN_SetDescriptorHeaps)
@@ -1217,6 +1231,8 @@ static void HookToCommandList(ID3D12Device* InDevice)
             const bool extendedRestoreSignature = Config::Instance()->ExtendedStateRestore.value_or_default();
 
             s_SetPipelineState.o_earlyHook = (PFN_SetPipelineState) pVTable[25];
+            if (Config::Instance()->DlssNrEnabled.value_or_default())
+                o_ResourceBarrier = (PFN_ResourceBarrier) pVTable[26];
             s_SetDescriptorHeaps.o_earlyHook = (PFN_SetDescriptorHeaps) pVTable[28];
             s_SetComputeRootSignature.o_earlyHook = (PFN_SetComputeRootSignature) pVTable[29];
             s_SetGraphicsRootSignature.o_earlyHook = (PFN_SetGraphicsRootSignature) pVTable[30];
@@ -1227,7 +1243,7 @@ static void HookToCommandList(ID3D12Device* InDevice)
             s_SetComputeRootShaderResourceView.o_earlyHook = (PFN_SetComputeRootShaderResourceView) pVTable[39];
             s_SetComputeRootUnorderedAccessView.o_earlyHook = (PFN_SetComputeRootUnorderedAccessView) pVTable[41];
 
-            if (s_SetPipelineState.o_earlyHook || s_SetDescriptorHeaps.o_earlyHook ||
+            if (o_ResourceBarrier || s_SetPipelineState.o_earlyHook || s_SetDescriptorHeaps.o_earlyHook ||
                 s_SetComputeRootSignature.o_earlyHook || s_SetGraphicsRootSignature.o_earlyHook ||
                 s_SetComputeRootDescriptorTable.o_earlyHook || s_SetComputeRoot32BitConstant.o_earlyHook ||
                 s_SetComputeRoot32BitConstants.o_earlyHook || s_SetComputeRootConstantBufferView.o_earlyHook ||
@@ -1235,6 +1251,9 @@ static void HookToCommandList(ID3D12Device* InDevice)
             {
                 DetourTransactionBegin();
                 DetourUpdateThread(GetCurrentThread());
+
+                if (o_ResourceBarrier != nullptr)
+                    DetourAttach(&(PVOID&) o_ResourceBarrier, hkResourceBarrier);
 
                 if (s_SetPipelineState.o_earlyHook != nullptr && extendedRestoreSignature)
                     DetourAttach(&(PVOID&) s_SetPipelineState.o_earlyHook, hkSetPipelineState);
@@ -1282,6 +1301,7 @@ static void HookToCommandList(ID3D12Device* InDevice)
                 }
                 else
                 {
+                    o_ResourceBarrier = nullptr;
                     s_SetPipelineState.o_earlyHook = nullptr;
                     s_SetDescriptorHeaps.o_earlyHook = nullptr;
                     s_SetComputeRootSignature.o_earlyHook = nullptr;
@@ -1314,6 +1334,12 @@ static void UnhookAll()
 {
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
+
+    if (o_ResourceBarrier != nullptr)
+    {
+        DetourDetach(&(PVOID&) o_ResourceBarrier, hkResourceBarrier);
+        o_ResourceBarrier = nullptr;
+    }
 
     if (s_SetComputeRootSignature.o_earlyHook != nullptr)
     {
