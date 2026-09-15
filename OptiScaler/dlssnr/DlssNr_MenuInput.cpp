@@ -93,7 +93,8 @@ void RenderInput(Config* config, float menuResScale)
                 config->DlssNrWhitePointSource = (uint32_t) source;
             }
 
-            HelpMarker("Game exposure uses supplied data. Scanned exposure validates sane readings, rejects junk/outliers and locks one source before it can drive NR.");
+            HelpMarker("Game exposure uses supplied data. Scanned exposure validates sane readings, rejects "
+                       "junk/outliers and locks one source before it can drive NR.");
             if (source == 1)
             {
                 if (!vk && ex.seenFrames == 0)
@@ -121,8 +122,7 @@ void RenderInput(Config* config, float menuResScale)
                     if (watching == 0)
                         ImGui::TextDisabled("No exposure candidates found.");
                     else
-                        ImGui::TextDisabled("%u exposure candidates",
-                                            watching);
+                        ImGui::TextDisabled("%u exposure candidates", watching);
                 }
                 else if (!haveAnchor)
                     ImGui::TextDisabled("Exposure candidate found.");

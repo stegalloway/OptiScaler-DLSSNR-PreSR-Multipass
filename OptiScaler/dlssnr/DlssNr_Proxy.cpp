@@ -36,7 +36,8 @@ void DestroyState(ProxyState& state)
 {
     if (state.feature != nullptr)
     {
-        if (state.compatibility) state.compatibility->Release(state.feature);
+        if (state.compatibility)
+            state.compatibility->Release(state.feature);
         else if (NVNGXProxy::D3D12_ReleaseFeature() != nullptr)
             NVNGXProxy::D3D12_ReleaseFeature()(state.feature);
     }
@@ -152,8 +153,8 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
         // GetParameters API, GetCapabilityParameters transfers ownership to the caller.
         NgxDiagnostics::Scope nrCapabilityTrace;
         const auto allocated = NVNGXProxy::D3D12_GetCapabilityParameters()(&state.params);
-        LOG_INFO("NR diagnostic capability parameters: result=0x{:08X} params={}",
-                 (unsigned)allocated, (void*)state.params);
+        LOG_INFO("NR diagnostic capability parameters: result=0x{:08X} params={}", (unsigned) allocated,
+                 (void*) state.params);
         if (allocated != NVSDK_NGX_Result_Success || state.params == nullptr)
         {
             DestroyState(state);
@@ -174,9 +175,9 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
         SetCreationParameters(state.params, settings, width, height);
 
         lifetime.Record(cmdList);
-        auto created =
-            NVNGXProxy::D3D12_CreateFeature()(cmdList, (NVSDK_NGX_Feature) 18, state.params, &state.feature);
-        LOG_INFO("NR diagnostic CreateFeature(18): result=0x{:08X} handle={}", (unsigned)created, (void*)state.feature);
+        auto created = NVNGXProxy::D3D12_CreateFeature()(cmdList, (NVSDK_NGX_Feature) 18, state.params, &state.feature);
+        LOG_INFO("NR diagnostic CreateFeature(18): result=0x{:08X} handle={}", (unsigned) created,
+                 (void*) state.feature);
         if (NVSDK_NGX_FAILED(created) && !state.feature)
         {
             state.compatibility = CompatibilityRuntime::TryOpen(device);
@@ -184,8 +185,8 @@ unsigned int Context::Impl::Prepare(ID3D12GraphicsCommandList* cmdList, ID3D12De
             {
                 SetCreationParameters(state.params, settings, width, height);
                 created = state.compatibility->Create(cmdList, state.params, &state.feature);
-                LOG_INFO("NR compatibility: CreateFeature(18) result=0x{:08X} handle={}",
-                         (unsigned)created, (void*)state.feature);
+                LOG_INFO("NR compatibility: CreateFeature(18) result=0x{:08X} handle={}", (unsigned) created,
+                         (void*) state.feature);
             }
         }
         LOG_INFO("NR compatibility: runtime file diagnostics bypassed after CreateFeature(18)");
@@ -277,8 +278,9 @@ unsigned int Context::Impl::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Device
     SetUInt(params, "DLSSNR.UseAutoMask", settings.autoMask ? 1u : 0u);
 
     lifetime.Record(cmdList);
-    const auto result = state.compatibility ? state.compatibility->Evaluate(cmdList, state.feature, params)
-                                           : NVNGXProxy::D3D12_EvaluateFeature()(cmdList, state.feature, params, nullptr);
+    const auto result = state.compatibility
+                            ? state.compatibility->Evaluate(cmdList, state.feature, params)
+                            : NVNGXProxy::D3D12_EvaluateFeature()(cmdList, state.feature, params, nullptr);
 
     if (result == NVSDK_NGX_Result_Success)
     {

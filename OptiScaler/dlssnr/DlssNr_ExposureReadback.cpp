@@ -112,9 +112,8 @@ bool EnsureReadback(ID3D12Device* device)
         desc.SampleDesc.Count = 1;
         desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-        if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
-                                                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                   IID_PPV_ARGS(&g_scan.readback[i]))))
+        if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                   nullptr, IID_PPV_ARGS(&g_scan.readback[i]))))
         {
             std::lock_guard<std::mutex> lock(g_scanMutex);
             g_scan.status = "could not allocate the readback buffers";
@@ -132,7 +131,7 @@ bool EnsureReadback(ID3D12Device* device)
 // to want: watching the scan in a game that supplies a REAL exposure, so the two can be
 // compared in the log. That is validation work, not a control, and it does not belong in a
 // panel.
-}
+} // namespace Detail
 using namespace Detail;
 
 void NoteBarriers(ID3D12GraphicsCommandList* commandList, unsigned int numBarriers,
@@ -178,8 +177,7 @@ void NoteBarriers(ID3D12GraphicsCommandList* commandList, unsigned int numBarrie
     {
         const D3D12_RESOURCE_BARRIER& b = barriers[barrierIndex];
         if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || b.Flags != D3D12_RESOURCE_BARRIER_FLAG_NONE ||
-            b.Transition.pResource == nullptr ||
-            b.Transition.StateBefore != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+            b.Transition.pResource == nullptr || b.Transition.StateBefore != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
             continue;
 
         for (size_t i = 0; i < g_scan.tracked.size(); ++i)
@@ -199,8 +197,7 @@ void NoteBarriers(ID3D12GraphicsCommandList* commandList, unsigned int numBarrie
                 break; // one sample per candidate per frame is enough
 
             g_scanBarrierInjection = true;
-            Barrier(commandList, t.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                    D3D12_RESOURCE_STATE_COPY_SOURCE);
+            Barrier(commandList, t.resource, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
 
             if (t.isBuffer)
             {
@@ -227,8 +224,7 @@ void NoteBarriers(ID3D12GraphicsCommandList* commandList, unsigned int numBarrie
                 commandList->CopyTextureRegion(&to, 0, 0, 0, &src, &one);
             }
 
-            Barrier(commandList, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
-                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            Barrier(commandList, t.resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             g_scanBarrierInjection = false;
 
             g_scan.readbackWriter[slot] = commandList;
@@ -284,13 +280,14 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
             device->AddRef();
             // Discovery starts before a rendering device is known. Never record a copy of a
             // resource discovered on another device into this device's command list.
-            std::erase_if(g_scan.tracked, [device](const Tracked& candidate)
-            {
-                if (candidate.device == device)
-                    return false;
-                candidate.resource->Release();
-                return true;
-            });
+            std::erase_if(g_scan.tracked,
+                          [device](const Tracked& candidate)
+                          {
+                              if (candidate.device == device)
+                                  return false;
+                              candidate.resource->Release();
+                              return true;
+                          });
         }
     }
 
@@ -388,8 +385,9 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
                             g_scan.activeCandidate = -1;
                             g_scan.selectionReadyFrame = g_scan.frames + kSelectionGraceFrames;
                         }
-                        LOG_WARN("DLSS-NR exposure scan: candidate {} ({}) rejected as junk: value {:.5f}, invalid reads {}",
-                                 (unsigned int) (i + 1), t.shape, value, t.invalidReads);
+                        LOG_WARN(
+                            "DLSS-NR exposure scan: candidate {} ({}) rejected as junk: value {:.5f}, invalid reads {}",
+                            (unsigned int) (i + 1), t.shape, value, t.invalidReads);
                     }
                     continue;
                 }
@@ -414,8 +412,9 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
                                 g_scan.activeCandidate = -1;
                                 g_scan.selectionReadyFrame = g_scan.frames + kSelectionGraceFrames;
                             }
-                            LOG_WARN("DLSS-NR exposure scan: buffer candidate {} ({}) rejected after {} >{:.1f}x spikes",
-                                     (unsigned int) (i + 1), t.shape, t.spikeReads, kMaxBufferSingleStep);
+                            LOG_WARN(
+                                "DLSS-NR exposure scan: buffer candidate {} ({}) rejected after {} >{:.1f}x spikes",
+                                (unsigned int) (i + 1), t.shape, t.spikeReads, kMaxBufferSingleStep);
                         }
                         continue;
                     }
@@ -440,8 +439,7 @@ void Tick(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, uint64_t sub
 
                 // Movement is only meaningful after the candidate has proved it can supply a run of
                 // sane readings. This prevents an early pair of unrelated values becoming the source.
-                if (t.inRange >= kMinDriveReads && t.saneStreak >= kMinDriveStreak &&
-                    t.highest > t.lowest * 1.20f)
+                if (t.inRange >= kMinDriveReads && t.saneStreak >= kMinDriveStreak && t.highest > t.lowest * 1.20f)
                     t.moves = true;
             }
 
@@ -556,4 +554,4 @@ void Shutdown()
     g_scan.status = "not started";
 }
 
-}
+} // namespace DlssNr::ExposureScan
