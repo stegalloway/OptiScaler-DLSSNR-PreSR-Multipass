@@ -71,15 +71,12 @@ void DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
 
     nr.gamePreExposure = frame.PreExposure;
 
-    whitePoint =
-        frame.WhitePointOverride > 0.0f ? frame.WhitePointOverride : ResolveWhitePoint(cfg, isHdrBuffer);
+    whitePoint = frame.WhitePointOverride > 0.0f ? frame.WhitePointOverride : ResolveWhitePoint(cfg, isHdrBuffer);
 
     // Zero-latency exposure (D3D12, source 1): when the game hands us a live exposure texture, the
     // white point is recomputed in-shader every frame from it (ExposurePreMul / exposure) instead of
     // the 3-4 frame CPU meter readback. whitePoint above still rides along in gWhitePoint as the
     // fallback the shader uses if the live sample is missing or absurd. Bound at t4 (InPrevEdit) below.
-
-
 
     if (cfg.DlssNrWhitePointSource.value_or_default() == 1 && frame.ExposureTexture != nullptr)
     {
@@ -122,8 +119,7 @@ void DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
                     Barrier(cmdList, nr.heldColor, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                             D3D12_RESOURCE_STATE_COPY_DEST);
                     cmdList->CopyResource(nr.heldColor, target);
-                    Barrier(cmdList, nr.heldColor, D3D12_RESOURCE_STATE_COPY_DEST,
-                            D3D12_RESOURCE_STATE_COPY_SOURCE);
+                    Barrier(cmdList, nr.heldColor, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
                     TransitionTarget(priorTargetState);
 
                     nr.heldActive = true;
@@ -187,8 +183,7 @@ void DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
     // (Calibration pass removed: it produced only a menu suggestion nothing consumed, at the cost
     // of a 4096-thread dispatch, a readback and an nth_element every frame.)
 
-    Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
     // Below full resolution the model is shown a filtered shrink of the proxy; the edit it returns is
     // enlarged during the resolve while the frame underneath stays full size and untouched.
@@ -255,15 +250,13 @@ void DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
             down.Mode = DlssNrMode_Downsample;
             down.Width = workWidth;
             down.Height = workHeight;
-            shader.DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr, nr.colorSmall,
-                                nullptr);
+            shader.DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr, nr.colorSmall, nullptr);
             Barrier(cmdList, nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
 
         modelInput = nr.colorSmall;
     }
-
 }
 
 DlssNrConstants DlssNr_Dx12::State::MakeResolveConstants(const EncodeContext& context, unsigned int effectivePasses)
@@ -293,7 +286,8 @@ DlssNrConstants DlssNr_Dx12::State::MakeResolveConstants(const EncodeContext& co
     resolveParams.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
     resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
     resolveParams.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
-    resolveParams.ResidualBlend = std::clamp(cfg.DlssNrShadowFloor.value_or_default(), 0.0f, 1.0f); // gShadowFloor alias
+    resolveParams.ResidualBlend =
+        std::clamp(cfg.DlssNrShadowFloor.value_or_default(), 0.0f, 1.0f); // gShadowFloor alias
     resolveParams.Transfer = std::min(cfg.DlssNrTransfer.value_or_default(), 1u);
     resolveParams.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
     resolveParams.Passthrough = isHdrBuffer ? 0u : 1u;
@@ -325,10 +319,9 @@ DlssNrConstants DlssNr_Dx12::State::MakeResolveConstants(const EncodeContext& co
     if (!loggedCompose.valid || loggedCompose.whitePoint != composeNow.whitePoint ||
         loggedCompose.transfer != composeNow.transfer || loggedCompose.colour != composeNow.colour ||
         loggedCompose.maxRatio != composeNow.maxRatio || loggedCompose.passthrough != composeNow.passthrough ||
-        loggedCompose.debugView != composeNow.debugView ||
-        loggedCompose.compareMode != composeNow.compareMode || loggedCompose.residual != composeNow.residual ||
-        loggedCompose.workW != composeNow.workW || loggedCompose.workH != composeNow.workH ||
-        loggedCompose.passes != composeNow.passes)
+        loggedCompose.debugView != composeNow.debugView || loggedCompose.compareMode != composeNow.compareMode ||
+        loggedCompose.residual != composeNow.residual || loggedCompose.workW != composeNow.workW ||
+        loggedCompose.workH != composeNow.workH || loggedCompose.passes != composeNow.passes)
     {
         loggedCompose = composeNow;
         LOG_INFO("DLSS-NR composition: paper white {:.2f}x, detail {:.2f}, colour {:.2f}, guard "

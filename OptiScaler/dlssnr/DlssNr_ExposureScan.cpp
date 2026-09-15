@@ -78,8 +78,8 @@ using namespace Detail;
 // engines actually allocate: some keep a small histogram beside the value, some keep a few frames of
 // history, and some put the whole thing in a four-channel texture and use one channel. The filter
 // only has to be tight enough that the list stays readable.
-bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsigned int* outBytes,
-                      bool* outIsBuffer, DXGI_FORMAT* outFormat)
+bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsigned int* outBytes, bool* outIsBuffer,
+                      DXGI_FORMAT* outFormat)
 {
     // An exposure is computed, so it is written by a shader. This is the one condition worth being
     // strict about: it removes almost everything without removing anything that could be the answer.
@@ -126,8 +126,7 @@ bool LooksLikeANumber(const D3D12_RESOURCE_DESC& rd, std::string* outShape, unsi
     return false;
 }
 
-void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int bytes, bool isBuffer,
-           DXGI_FORMAT texFormat)
+void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int bytes, bool isBuffer, DXGI_FORMAT texFormat)
 {
     ID3D12Device* resourceDevice = nullptr;
     if (FAILED(resource->GetDevice(IID_PPV_ARGS(&resourceDevice))) || resourceDevice == nullptr)
@@ -143,14 +142,15 @@ void Adopt(ID3D12Resource* resource, const std::string& shape, unsigned int byte
             return;
     }
 
-    const size_t bufferCandidates = std::count_if(g_scan.tracked.begin(), g_scan.tracked.end(),
-                                                   [](const Tracked& t) { return t.isBuffer; });
+    const size_t bufferCandidates =
+        std::count_if(g_scan.tracked.begin(), g_scan.tracked.end(), [](const Tracked& t) { return t.isBuffer; });
     if (isBuffer && bufferCandidates >= kMaxBufferCandidates)
     {
         if (!g_scan.complained)
         {
             g_scan.complained = true;
-            LOG_WARN("DLSS-NR exposure scan: generic buffer reserve reached at {}; keeping {} slots available for float textures",
+            LOG_WARN("DLSS-NR exposure scan: generic buffer reserve reached at {}; keeping {} slots available for "
+                     "float textures",
                      kMaxBufferCandidates, kMaxCandidates - kMaxBufferCandidates);
         }
         return;
@@ -200,9 +200,9 @@ void NoteResource(const D3D12_RESOURCE_DESC* desc, ID3D12Resource* resource)
         if ((desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS) != 0 && g_scan.nearMissLogged < 40)
         {
             g_scan.nearMissLogged++;
-            LOG_INFO("DLSS-NR scan near-miss #{}: UAV dim {} {}x{}x{} fmt {} (filter rejected)",
-                     g_scan.nearMissLogged, (int) desc->Dimension, (unsigned int) desc->Width,
-                     desc->Height, desc->DepthOrArraySize, (int) desc->Format);
+            LOG_INFO("DLSS-NR scan near-miss #{}: UAV dim {} {}x{}x{} fmt {} (filter rejected)", g_scan.nearMissLogged,
+                     (int) desc->Dimension, (unsigned int) desc->Width, desc->Height, desc->DepthOrArraySize,
+                     (int) desc->Format);
         }
 
         return;
@@ -254,10 +254,7 @@ void NoteUav(ID3D12Resource* resource, const D3D12_UNORDERED_ACCESS_VIEW_DESC* d
 // How many frames of watching without a validated source before saying so.
 constexpr unsigned int kPatience = 1800;
 
-static float CandidateDriveCeiling(const Tracked& t)
-{
-    return t.isBuffer ? kBufferDriveCeiling : kTextureDriveCeiling;
-}
+static float CandidateDriveCeiling(const Tracked& t) { return t.isBuffer ? kBufferDriveCeiling : kTextureDriveCeiling; }
 
 static bool CandidateUsable(const Tracked& t)
 {
@@ -408,8 +405,8 @@ static int SelectCandidateLocked()
 
     g_scan.activeCandidate = best;
     const Tracked& t = g_scan.tracked[best];
-    LOG_INFO("DLSS-NR exposure scan: locked validated candidate {} ({}) score {:.2f}, range {:.5f}..{:.5f}",
-             best + 1, t.shape, CandidateConfidence(t), t.lowest, t.highest);
+    LOG_INFO("DLSS-NR exposure scan: locked validated candidate {} ({}) score {:.2f}, range {:.5f}..{:.5f}", best + 1,
+             t.shape, CandidateConfidence(t), t.lowest, t.highest);
     return best;
 }
 
@@ -435,7 +432,9 @@ const char* Headline()
     static std::string line;
     switch (Where())
     {
-    case Verdict::Off: line = ""; break;
+    case Verdict::Off:
+        line = "";
+        break;
     case Verdict::Waiting:
     {
         const unsigned int seen = Examined();
@@ -459,17 +458,23 @@ const char* Headline()
     {
         std::lock_guard<std::mutex> lock(g_scanMutex);
         const int best = SelectCandidateLocked();
-        if (best < 0) { line = "DLSS-NR exposure scan: validating candidates"; break; }
+        if (best < 0)
+        {
+            line = "DLSS-NR exposure scan: validating candidates";
+            break;
+        }
         const Tracked& t = g_scan.tracked[best];
         const float ratio = t.highest / std::max(t.lowest, kDriveFloor);
         char buf[208];
         snprintf(buf, sizeof(buf),
-                 "DLSS-NR exposure scan: VALIDATED -- candidate %d = %.5f  (%.5f..%.5f, x%.1f)  locked",
-                 best + 1, t.latest, t.lowest, t.highest, ratio);
+                 "DLSS-NR exposure scan: VALIDATED -- candidate %d = %.5f  (%.5f..%.5f, x%.1f)  locked", best + 1,
+                 t.latest, t.lowest, t.highest, ratio);
         line = buf;
         break;
     }
-    case Verdict::Barren: line = "DLSS-NR exposure scan: no validated exposure source found."; break;
+    case Verdict::Barren:
+        line = "DLSS-NR exposure scan: no validated exposure source found.";
+        break;
     }
     return line.c_str();
 }
@@ -480,9 +485,12 @@ float BestValue(int* outIndex, float* outLowest, float* outHighest)
     const int best = SelectCandidateLocked();
     if (best < 0)
         return 0.0f;
-    if (outIndex != nullptr) *outIndex = best + 1;
-    if (outLowest != nullptr) *outLowest = g_scan.tracked[best].lowest;
-    if (outHighest != nullptr) *outHighest = g_scan.tracked[best].highest;
+    if (outIndex != nullptr)
+        *outIndex = best + 1;
+    if (outLowest != nullptr)
+        *outLowest = g_scan.tracked[best].lowest;
+    if (outHighest != nullptr)
+        *outHighest = g_scan.tracked[best].highest;
     return g_scan.tracked[best].latest;
 }
 
@@ -505,9 +513,12 @@ float BestAnchorValue(int* outIndex, float* outLowest, float* outHighest)
 
     if (best < 0)
         return 0.0f;
-    if (outIndex != nullptr) *outIndex = best + 1;
-    if (outLowest != nullptr) *outLowest = g_scan.tracked[best].lowest;
-    if (outHighest != nullptr) *outHighest = g_scan.tracked[best].highest;
+    if (outIndex != nullptr)
+        *outIndex = best + 1;
+    if (outLowest != nullptr)
+        *outLowest = g_scan.tracked[best].lowest;
+    if (outHighest != nullptr)
+        *outHighest = g_scan.tracked[best].highest;
     return g_scan.tracked[best].latest;
 }
 

@@ -20,7 +20,8 @@ void RenderBlend(Config* config, float menuResScale)
         if (ImGui::Checkbox("Match HDR brightness response (experimental)", &hdrTransfer))
             config->DlssNrHdrTransfer = hdrTransfer;
         ImGui::EndDisabled();
-        HelpMarker("Match early NR brightness changes to the finished HDR image. Adds GPU work; unreliable fits fall back.");
+        HelpMarker(
+            "Match early NR brightness changes to the finished HDR image. Adds GPU work; unreliable fits fall back.");
     }
     float transfer = config->DlssNrTransferStrength.value_or_default();
     if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
@@ -92,7 +93,8 @@ void RenderBlend(Config* config, float menuResScale)
     if (ImGui::SmallButton("Reset##shadowfloor"))
         config->DlssNrShadowFloor = 0.0f;
 
-    HelpMarker("Minimum luminance NR may leave relative to the untouched frame. 0.80x = at most 20% darkening. 1.00x = no NR darkening. 0 = stock.");
+    HelpMarker("Minimum luminance NR may leave relative to the untouched frame. 0.80x = at most 20% darkening. 1.00x = "
+               "no NR darkening. 0 = stock.");
 }
 
 void RenderInspect(Config* config, float menuResScale)
@@ -101,7 +103,8 @@ void RenderInspect(Config* config, float menuResScale)
     if (ImGui::Checkbox("Hold frame", &held))
         config->DlssNrHoldFrame = held;
 
-    HelpMarker("Freeze a frame for NR tuning. Later game effects may update; temporal behaviour is not representative.");
+    HelpMarker(
+        "Freeze a frame for NR tuning. Later game effects may update; temporal behaviour is not representative.");
 
     static const char* compareNames[] = { "Off", "Side by side", "Wipe" };
     int compare = (int) config->DlssNrCompare.value_or_default();
@@ -116,12 +119,9 @@ void RenderInspect(Config* config, float menuResScale)
         if (ImGui::Checkbox("Swap sides", &swap))
             config->DlssNrCompareSwap = swap;
 
-
         bool tags = config->DlssNrCompareTags.value_or_default();
         if (ImGui::Checkbox("Label the sides", &tags))
             config->DlssNrCompareTags = tags;
-
-
 
         if (tags)
         {

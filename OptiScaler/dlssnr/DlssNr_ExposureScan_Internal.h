@@ -11,7 +11,8 @@ namespace DlssNr::ExposureScan::Detail
 // teardown), the real discriminator is MOVEMENT, not scarcity, so a larger cap costs only a few tiny
 // copies a frame and stops the answer being crowded out.
 constexpr size_t kMaxCandidates = 64;
-// Generic buffers cannot consume the whole table; reserve room for the tiny float textures most games use for eye adaptation.
+// Generic buffers cannot consume the whole table; reserve room for the tiny float textures most games use for eye
+// adaptation.
 constexpr size_t kMaxBufferCandidates = 48;
 
 // Five slots because safe barrier capture happens earlier in the frame than Tick(). Tick reads the
@@ -52,13 +53,13 @@ struct Tracked
     std::string shape;
     bool isBuffer = false;
     unsigned int bytes = 4;
-    DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN;  // the source texture's format, for CopyTextureRegion
+    DXGI_FORMAT texFormat = DXGI_FORMAT_UNKNOWN; // the source texture's format, for CopyTextureRegion
 
     float latest = 0.0f;
     float lowest = 0.0f;
     float highest = 0.0f;
     unsigned int reads = 0;
-    unsigned int inRange = 0;   // sane reads eligible to drive NR
+    unsigned int inRange = 0; // sane reads eligible to drive NR
     unsigned int saneStreak = 0;
     unsigned int invalidReads = 0;
     unsigned int spikeReads = 0;
@@ -76,17 +77,17 @@ struct ScanState
     std::vector<Tracked> tracked;
     ID3D12Resource* readback[kSlots] = {};
     size_t readbackCounts[kSlots] = {};
-    uint64_t readbackValid[kSlots] = {}; // bit i means candidate i was safely copied into this slot
+    uint64_t readbackValid[kSlots] = {};                    // bit i means candidate i was safely copied into this slot
     ID3D12GraphicsCommandList* readbackWriter[kSlots] = {}; // one writer command list per slot; not retained
     unsigned int writeSlot = 0;
     unsigned long long frames = 0;
     bool captureActive = false;
     bool safeCaptureLogged = false;
-    int activeCandidate = -1; // locked validated source; -1 until one proves itself
+    int activeCandidate = -1;                   // locked validated source; -1 until one proves itself
     unsigned long long selectionReadyFrame = 0; // grace window lets a better texture candidate emerge
     const char* status = "not started";
     bool complained = false;
-    unsigned int nearMissLogged = 0;   // bounded diagnostic; see NoteResource
+    unsigned int nearMissLogged = 0; // bounded diagnostic; see NoteResource
 };
 
 extern ScanState g_scan;
@@ -96,4 +97,4 @@ extern std::mutex g_scanMutex;
 extern std::mutex g_tickMutex;
 
 bool Wanted();
-}
+} // namespace DlssNr::ExposureScan::Detail

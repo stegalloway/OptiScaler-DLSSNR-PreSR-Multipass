@@ -13,42 +13,48 @@
 
 namespace DlssNr::ExposureScan
 {
-namespace { constexpr float kFloor = 1e-6f; constexpr float kCeiling = 1e4f; }
+namespace
+{
+constexpr float kFloor = 1e-6f;
+constexpr float kCeiling = 1e4f;
+} // namespace
 namespace
 {
 std::mutex g_anchorMutex;
-std::vector<AnchorPoint> g_anchors;   // guarded by g_anchorMutex, kept sorted by scan ascending
+std::vector<AnchorPoint> g_anchors; // guarded by g_anchorMutex, kept sorted by scan ascending
 
 void SortAnchorsLocked()
 {
     std::sort(g_anchors.begin(), g_anchors.end(),
               [](const AnchorPoint& a, const AnchorPoint& b) { return a.scan < b.scan; });
 }
-}  // namespace
+} // namespace
 
 // Load the persisted table (or migrate a pre-existing single anchor) exactly once, before any lock
 // is taken -- LoadAnchors/AnchorAdd take g_anchorMutex themselves, so this must not hold it.
 void EnsureAnchorsLoaded()
 {
     static std::once_flag once;
-    std::call_once(once, [] {
-        auto& cfg = *Config::Instance();
-        const std::string ser = cfg.DlssNrScanAnchors.value_or_default();
+    std::call_once(once,
+                   []
+                   {
+                       auto& cfg = *Config::Instance();
+                       const std::string ser = cfg.DlssNrScanAnchors.value_or_default();
 
-        if (!ser.empty())
-        {
-            LoadAnchors(ser);
-            return;
-        }
+                       if (!ser.empty())
+                       {
+                           LoadAnchors(ser);
+                           return;
+                       }
 
-        // Migration: fold a single-anchor ini from before this feature into a one-row table so the
-        // user does not lose the calibration they already set.
-        const float v = cfg.DlssNrScanAnchorValue.value_or_default();
-        const float w = cfg.DlssNrScanAnchorWhitePoint.value_or_default();
+                       // Migration: fold a single-anchor ini from before this feature into a one-row table so the
+                       // user does not lose the calibration they already set.
+                       const float v = cfg.DlssNrScanAnchorValue.value_or_default();
+                       const float w = cfg.DlssNrScanAnchorWhitePoint.value_or_default();
 
-        if (v > kFloor && w > 1e-6f)
-            AnchorAdd(v, w);
-    });
+                       if (v > kFloor && w > 1e-6f)
+                           AnchorAdd(v, w);
+                   });
 }
 
 std::vector<AnchorPoint> Anchors()
@@ -211,4 +217,4 @@ std::string SerializeAnchors()
     return out;
 }
 
-}
+} // namespace DlssNr::ExposureScan
