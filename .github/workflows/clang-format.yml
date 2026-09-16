@@ -1,4 +1,5 @@
 name: clang-format Check
+
 on:
   push:
     paths-ignore:
@@ -6,15 +7,92 @@ on:
   pull_request:
     paths-ignore:
       - '.github/**'
+
 jobs:
   formatting-check:
     name: Formatting Check
     runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v4
-    - name: Run clang-format style check for C/C++/Protobuf programs.
+    - name: Checkout source commit
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    - name: Collect changed C/C++ files
+      id: changed
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        PUSH_BEFORE: ${{ github.event.before }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: |
+        set -euo pipefail
+
+        rm -rf .clang-format-changed
+        mkdir -p .clang-format-changed
+        cp .clang-format .clang-format-changed/.clang-format
+
+        if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          BASE_SHA="$PR_BASE_SHA"
+          DIFF_SPEC="${BASE_SHA}...${HEAD_SHA}"
+        else
+          BASE_SHA="$PUSH_BEFORE"
+
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            if git rev-parse "${HEAD_SHA}^" >/dev/null 2>&1; then
+              BASE_SHA="$(git rev-parse "${HEAD_SHA}^")"
+            else
+              BASE_SHA="$(git hash-object -t tree /dev/null)"
+            fi
+          fi
+
+          DIFF_SPEC="${BASE_SHA}..${HEAD_SHA}"
+        fi
+
+        echo "Diff range: $DIFF_SPEC"
+
+        count=0
+
+        while IFS= read -r -d '' file; do
+          case "$file" in
+            OptiScaler/include/*)
+              continue
+              ;;
+          esac
+
+          case "$file" in
+            *.c|*.cc|*.cpp|*.cxx|*.h|*.hh|*.hpp|*.hxx|*.proto)
+              if [[ -f "$file" ]]; then
+                mkdir -p ".clang-format-changed/$(dirname "$file")"
+                cp -- "$file" ".clang-format-changed/$file"
+                echo "clang-format target: $file"
+                count=$((count + 1))
+              fi
+              ;;
+          esac
+        done < <(
+          git diff             --name-only             -z             --diff-filter=ACMR             "$DIFF_SPEC"             -- OptiScaler
+        )
+
+        echo "Changed C/C++ files selected: $count"
+
+        if [[ "$count" -eq 0 ]]; then
+          echo "has_cpp=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "has_cpp=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Run clang-format 20 on changed files only
+      if: steps.changed.outputs.has_cpp == 'true'
       uses: jidicula/clang-format-action@v4.15.0
       with:
         clang-format-version: '20'
-        check-path: 'OptiScaler'
-        exclude-regex: 'external/|OptiScaler/include/'
+        check-path: '.clang-format-changed/OptiScaler'
+
+    - name: No changed C/C++ files
+      if: steps.changed.outputs.has_cpp != 'true'
+      shell: bash
+      run: echo "No changed OptiScaler C/C++ files require clang-format checking."
