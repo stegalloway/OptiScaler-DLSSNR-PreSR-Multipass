@@ -1,14 +1,92 @@
 name: clang-format Check
 on: [push, pull_request]
+
+permissions:
+  contents: read
+
 jobs:
   formatting-check:
     name: Formatting Check
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Run clang-format style check for C/C++/Protobuf programs.
+      with:
+        fetch-depth: 0
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    - name: Stage changed C/C++/Protobuf files
+      id: changed
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        BEFORE_SHA: ${{ github.event.before }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        set -euo pipefail
+        head=$(git rev-parse HEAD)
+        ensure_commit() {
+          git cat-file -e "$1^{commit}" 2>/dev/null ||
+            git fetch --no-tags origin "$1"
+        }
+
+        if [[ "$EVENT_NAME" == "pull_request" ]]; then
+          ensure_commit "$PR_BASE_SHA"
+          base=$(git merge-base "$PR_BASE_SHA" "$head")
+        elif [[ -n "$BEFORE_SHA" && ! "$BEFORE_SHA" =~ ^0+$ ]]; then
+          # Also handles force pushes whose previous tip is no longer an ancestor.
+          ensure_commit "$BEFORE_SHA"
+          base="$BEFORE_SHA"
+        else
+          # A new branch has no before SHA. Prefer its fork point on the
+          # default branch; for the default branch itself use HEAD's parent.
+          default_ref="refs/remotes/origin/$DEFAULT_BRANCH"
+          if git show-ref --verify --quiet "$default_ref" &&
+             [[ "$(git rev-parse "$default_ref")" != "$head" ]] &&
+             base=$(git merge-base "$default_ref" "$head"); then
+            :
+          elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            base=$(git rev-parse HEAD^)
+          else
+            base=$(git hash-object -t tree /dev/null)
+          fi
+        fi
+
+        # Keep the tree inside the workspace so the action's Docker mount
+        # can access it, preserving paths and the root formatting rules.
+        stage=$(mktemp -d "$GITHUB_WORKSPACE/.clang-format-changed.XXXXXX")
+        cp -- .clang-format "$stage/.clang-format"
+        changed_list=$(mktemp)
+        git diff --name-only --diff-filter=ACMRT -z "$base" "$head" -- > "$changed_list"
+        count=0
+        while IFS= read -r -d '' file; do
+          case "$file" in
+            OptiScaler/external/*|OptiScaler/include/*) continue ;;
+          esac
+          case "$file" in
+            *.c|*.C|*.cc|*.cpp|*.cxx|*.c++|*.h|*.H|*.hh|*.hpp|*.hxx|*.h++|*.proto) ;;
+            *) continue ;;
+          esac
+          [[ -f "$file" && ! -L "$file" ]] || continue
+          # The action enumerates files by newline; fail rather than silently
+          # skip a source path it cannot represent.
+          if [[ "$file" == *$'\n'* ]]; then
+            echo "::error::Source filenames containing newlines are unsupported"
+            exit 1
+          fi
+          mkdir -p -- "$stage/$(dirname -- "$file")"
+          cp -- "$file" "$stage/$file"
+          count=$((count + 1))
+        done < "$changed_list"
+        rm -- "$changed_list"
+        echo "path=$stage" >> "$GITHUB_OUTPUT"
+        echo "count=$count" >> "$GITHUB_OUTPUT"
+        echo "Checking $count changed source files ($base -> $head)" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Run clang-format style check for changed C/C++/Protobuf programs
+      if: steps.changed.outputs.count != '0'
       uses: jidicula/clang-format-action@v4.15.0
       with:
         clang-format-version: '20'
-        check-path: 'OptiScaler'
-        exclude-regex: 'external/|OptiScaler/include/'
+        check-path: ${{ steps.changed.outputs.path }}
+        exclude-regex: 'OptiScaler/external/|OptiScaler/include/'
