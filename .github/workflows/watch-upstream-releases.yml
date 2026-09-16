@@ -1,4 +1,4 @@
-name: Watch upstream prereleases
+name: Watch upstream releases
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: upstream-prerelease-port
+  group: upstream-release-port
   cancel-in-progress: false
 
 permissions:
@@ -14,12 +14,13 @@ permissions:
   issues: write
 
 jobs:
-  prepare-candidates:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
-      new_release: ${{ steps.port.outputs.new_release }}
+      action: ${{ steps.port.outputs.action }}
       tag: ${{ steps.port.outputs.tag }}
       upstream_sha: ${{ steps.port.outputs.upstream_sha }}
+      upstream_prerelease: ${{ steps.port.outputs.upstream_prerelease }}
       release_name: ${{ steps.port.outputs.release_name }}
       release_url: ${{ steps.port.outputs.release_url }}
       candidate_count: ${{ steps.port.outputs.candidate_count }}
@@ -40,7 +41,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Detect upstream prerelease and port maintained patches
+      - name: Detect upstream release state and prepare candidates
         id: port
         shell: bash
         env:
@@ -52,6 +53,7 @@ jobs:
           upstream=$(jq -r '.upstream_repository' "$manifest")
           baseline_tag=$(jq -r '.baseline_tag' "$manifest")
           baseline_commit=$(jq -r '.baseline_commit' "$manifest")
+          baseline_prerelease=$(jq -r 'if has("baseline_prerelease") then (.baseline_prerelease|tostring) else "unknown" end' "$manifest")
           general_patch=$(jq -r '.general_patch_commit' "$manifest")
           tlou2_patch=$(jq -r '.tlou2_patch_commit' "$manifest")
           rdr2_patch=$(jq -r '.rdr2_patch_commit' "$manifest")
@@ -62,18 +64,22 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${upstream}/releases?per_page=20")
 
-          release=$(jq -c '[.[] | select(.draft == false and .prerelease == true)][0]' <<<"$release_json")
+          release=$(jq -c '[.[] | select(.draft == false)][0]' <<<"$release_json")
           if [[ -z "$release" || "$release" == "null" ]]; then
-            echo "No published upstream prerelease was found."
+            echo "No published upstream release was found."
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "candidate_count=0" >> "$GITHUB_OUTPUT"
+            echo 'candidate_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           tag=$(jq -r '.tag_name' <<<"$release")
           release_name=$(jq -r '.name // .tag_name' <<<"$release")
           release_url=$(jq -r '.html_url' <<<"$release")
+          upstream_prerelease=$(jq -r '.prerelease|tostring' <<<"$release")
 
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]]; then
-            echo "::error::Refusing unexpected upstream prerelease tag: $tag"
+            echo "::error::Refusing unexpected upstream release tag: $tag"
             exit 1
           fi
 
@@ -84,36 +90,137 @@ jobs:
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
+          echo "upstream_prerelease=$upstream_prerelease" >> "$GITHUB_OUTPUT"
           echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
           echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
 
-          if [[ "$tag" == "$baseline_tag" && "$upstream_sha" == "$baseline_commit" ]]; then
-            echo "new_release=false" >> "$GITHUB_OUTPUT"
-            echo "candidate_count=0" >> "$GITHUB_OUTPUT"
-            echo 'candidate_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
-            echo "Upstream prerelease $tag is already the tracked baseline."
-            exit 0
-          fi
-
           git fetch origin '+refs/heads/*:refs/remotes/origin/*'
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          ensure_branch() {
+            local branch="$1"
+            local expected="$2"
+            local existing
+            existing=$(git ls-remote --heads origin "refs/heads/${branch}" | awk '{print $1}' | head -n1)
+
+            if [[ -z "$existing" ]]; then
+              git push origin "${expected}:refs/heads/${branch}"
+            elif [[ "$existing" != "$expected" ]]; then
+              echo "::error::${branch} exists at ${existing}, expected ${expected}."
+              exit 1
+            fi
+          }
+
+          set_empty_candidates() {
+            echo "candidate_count=0" >> "$GITHUB_OUTPUT"
+            echo 'candidate_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+          }
+
+          if [[ "$tag" == "$baseline_tag" ]]; then
+            if [[ "$upstream_sha" != "$baseline_commit" ]]; then
+              echo "::error::Upstream tag $tag moved from $baseline_commit to $upstream_sha. Refusing automatic retag handling."
+              exit 1
+            fi
+
+            if [[ "$baseline_prerelease" == "unknown" ]]; then
+              echo "action=normalize" >> "$GITHUB_OUTPUT"
+              set_empty_candidates
+              exit 0
+            fi
+
+            if [[ "$upstream_prerelease" == "$baseline_prerelease" ]]; then
+              echo "action=none" >> "$GITHUB_OUTPUT"
+              set_empty_candidates
+              echo "Upstream release $tag / $upstream_sha is already fully tracked."
+              exit 0
+            fi
+
+            if [[ "$baseline_prerelease" == "false" && "$upstream_prerelease" == "true" ]]; then
+              echo "::error::Upstream release $tag changed from stable back to prerelease. Refusing automatic demotion."
+              exit 1
+            fi
+
+            release_count=0
+            for suffix in general tlou2 rdr2; do
+              code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/mods-${tag}-${suffix}")
+              if [[ "$code" == "200" ]]; then
+                release_count=$((release_count + 1))
+              elif [[ "$code" != "404" ]]; then
+                echo "::error::Unexpected GitHub API status $code while checking mods-${tag}-${suffix}."
+                exit 1
+              fi
+            done
+
+            if [[ "$release_count" == "3" ]]; then
+              echo "action=promote" >> "$GITHUB_OUTPUT"
+              echo "general_sha=$general_patch" >> "$GITHUB_OUTPUT"
+              echo "tlou2_sha=$tlou2_patch" >> "$GITHUB_OUTPUT"
+              echo "rdr2_sha=$rdr2_patch" >> "$GITHUB_OUTPUT"
+              set_empty_candidates
+              exit 0
+            fi
+
+            if [[ "$release_count" != "0" ]]; then
+              echo "::error::Only $release_count of 3 expected mod releases exist for $tag. Refusing partial promotion."
+              exit 1
+            fi
+
+            general_parent=$(git rev-parse "${general_patch}^")
+            tlou2_parent=$(git rev-parse "${tlou2_patch}^")
+            rdr2_parent=$(git rev-parse "${rdr2_patch}^")
+
+            if [[ "$general_parent" != "$upstream_sha" || "$tlou2_parent" != "$general_patch" || "$rdr2_parent" != "$general_patch" ]]; then
+              echo "::error::Tracked baseline patch commits do not have the required one-commit lineage."
+              exit 1
+            fi
+
+            upstream_branch="candidate/${tag}-upstream"
+            general_branch="candidate/${tag}-general"
+            tlou2_branch="candidate/${tag}-tlou2"
+            rdr2_branch="candidate/${tag}-rdr2"
+
+            ensure_branch "$upstream_branch" "$upstream_sha"
+            ensure_branch "$general_branch" "$general_patch"
+            ensure_branch "$tlou2_branch" "$tlou2_patch"
+            ensure_branch "$rdr2_branch" "$rdr2_patch"
+
+            echo "action=build_baseline" >> "$GITHUB_OUTPUT"
+            echo "general_status=success" >> "$GITHUB_OUTPUT"
+            echo "tlou2_status=success" >> "$GITHUB_OUTPUT"
+            echo "rdr2_status=success" >> "$GITHUB_OUTPUT"
+            echo "general_branch=$general_branch" >> "$GITHUB_OUTPUT"
+            echo "tlou2_branch=$tlou2_branch" >> "$GITHUB_OUTPUT"
+            echo "rdr2_branch=$rdr2_branch" >> "$GITHUB_OUTPUT"
+            echo "general_sha=$general_patch" >> "$GITHUB_OUTPUT"
+            echo "tlou2_sha=$tlou2_patch" >> "$GITHUB_OUTPUT"
+            echo "rdr2_sha=$rdr2_patch" >> "$GITHUB_OUTPUT"
+
+            candidates=$(jq -cn \
+              --arg gref "$general_branch" --arg gsha "$general_patch" \
+              --arg tref "$tlou2_branch" --arg tsha "$tlou2_patch" \
+              --arg rref "$rdr2_branch" --arg rsha "$rdr2_patch" \
+              '{"include":[
+                {"ref":$gref,"sha":$gsha,"kind":"general"},
+                {"ref":$tref,"sha":$tsha,"kind":"tlou2"},
+                {"ref":$rref,"sha":$rsha,"kind":"rdr2"}
+              ]}')
+
+            echo "candidate_count=3" >> "$GITHUB_OUTPUT"
+            echo "candidate_matrix=$candidates" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           upstream_branch="candidate/${tag}-upstream"
           general_branch="candidate/${tag}-general"
           tlou2_branch="candidate/${tag}-tlou2"
           rdr2_branch="candidate/${tag}-rdr2"
 
-          existing_upstream=$(git ls-remote --heads origin "refs/heads/${upstream_branch}" | awk '{print $1}' | head -n1)
-          if [[ -z "$existing_upstream" ]]; then
-            git push origin "${upstream_sha}:refs/heads/${upstream_branch}"
-          elif [[ "$existing_upstream" != "$upstream_sha" ]]; then
-            echo "::error::${upstream_branch} exists at $existing_upstream but upstream tag resolves to $upstream_sha."
-            exit 1
-          fi
-
-          echo "new_release=true" >> "$GITHUB_OUTPUT"
+          ensure_branch "$upstream_branch" "$upstream_sha"
 
           general_status="conflict"
           tlou2_status="skipped"
@@ -191,27 +298,19 @@ jobs:
 
           candidates='[]'
           if [[ "$general_status" == "success" ]]; then
-            candidates=$(jq -c \
-              --arg ref "$general_branch" \
-              --arg sha "$general_sha" \
-              '. + [{"ref":$ref,"sha":$sha,"kind":"general"}]' <<<"$candidates")
+            candidates=$(jq -c --arg ref "$general_branch" --arg sha "$general_sha" '. + [{"ref":$ref,"sha":$sha,"kind":"general"}]' <<<"$candidates")
           fi
           if [[ "$tlou2_status" == "success" ]]; then
-            candidates=$(jq -c \
-              --arg ref "$tlou2_branch" \
-              --arg sha "$tlou2_sha" \
-              '. + [{"ref":$ref,"sha":$sha,"kind":"tlou2"}]' <<<"$candidates")
+            candidates=$(jq -c --arg ref "$tlou2_branch" --arg sha "$tlou2_sha" '. + [{"ref":$ref,"sha":$sha,"kind":"tlou2"}]' <<<"$candidates")
           fi
           if [[ "$rdr2_status" == "success" ]]; then
-            candidates=$(jq -c \
-              --arg ref "$rdr2_branch" \
-              --arg sha "$rdr2_sha" \
-              '. + [{"ref":$ref,"sha":$sha,"kind":"rdr2"}]' <<<"$candidates")
+            candidates=$(jq -c --arg ref "$rdr2_branch" --arg sha "$rdr2_sha" '. + [{"ref":$ref,"sha":$sha,"kind":"rdr2"}]' <<<"$candidates")
           fi
 
           candidate_count=$(jq 'length' <<<"$candidates")
           candidate_matrix=$(jq -cn --argjson include "$candidates" '{"include":$include}')
 
+          echo "action=build" >> "$GITHUB_OUTPUT"
           echo "general_status=$general_status" >> "$GITHUB_OUTPUT"
           echo "tlou2_status=$tlou2_status" >> "$GITHUB_OUTPUT"
           echo "rdr2_status=$rdr2_status" >> "$GITHUB_OUTPUT"
@@ -224,12 +323,13 @@ jobs:
           echo "candidate_count=$candidate_count" >> "$GITHUB_OUTPUT"
           echo "candidate_matrix=$candidate_matrix" >> "$GITHUB_OUTPUT"
 
-      - name: Create upstream prerelease tracking issue
-        if: steps.port.outputs.new_release == 'true'
+      - name: Create release-port tracking issue
+        if: steps.port.outputs.action == 'build' || steps.port.outputs.action == 'build_baseline'
         uses: actions/github-script@v7
         env:
           TAG: ${{ steps.port.outputs.tag }}
           UPSTREAM_SHA: ${{ steps.port.outputs.upstream_sha }}
+          UPSTREAM_PRERELEASE: ${{ steps.port.outputs.upstream_prerelease }}
           RELEASE_NAME: ${{ steps.port.outputs.release_name }}
           RELEASE_URL: ${{ steps.port.outputs.release_url }}
           GENERAL_STATUS: ${{ steps.port.outputs.general_status }}
@@ -240,7 +340,8 @@ jobs:
           RDR2_BRANCH: ${{ steps.port.outputs.rdr2_branch }}
         with:
           script: |
-            const title = `Upstream ${process.env.TAG} prerelease port`;
+            const state = process.env.UPSTREAM_PRERELEASE === 'true' ? 'prerelease' : 'stable release';
+            const title = `Upstream ${process.env.TAG} ${state} port`;
             const {data: openIssues} = await github.rest.issues.listForRepo({
               ...context.repo,
               state: 'open',
@@ -256,7 +357,7 @@ jobs:
               `- ${label}: **${status}**${status === 'success' ? ` - \`${branch}\`` : ''}`;
 
             const body = [
-              `Detected upstream prerelease [${process.env.RELEASE_NAME}](${process.env.RELEASE_URL}).`,
+              `Detected upstream ${state} [${process.env.RELEASE_NAME}](${process.env.RELEASE_URL}).`,
               '',
               `- Upstream tag: \`${process.env.TAG}\``,
               `- Upstream commit: \`${process.env.UPSTREAM_SHA}\``,
@@ -266,8 +367,8 @@ jobs:
               branchLine('TLOU2 / Akane', process.env.TLOU2_BRANCH, process.env.TLOU2_STATUS),
               branchLine('RDR2 / PureDark', process.env.RDR2_BRANCH, process.env.RDR2_STATUS),
               '',
-              'If all three ports build and pass provenance checks, this workflow automatically publishes three separate GitHub prereleases.',
-              'If any port or build fails, no automatic prereleases are published and the known-good branches remain unchanged.',
+              'All three builds must pass before any automatic release is published.',
+              'Known-good maintained branches are never moved by this automation.',
             ].join('\n');
 
             await github.rest.issues.create({
@@ -276,26 +377,149 @@ jobs:
               body,
             });
 
+  normalize-manifest:
+    needs: prepare
+    if: needs.prepare.outputs.action == 'normalize'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Add upstream release state to manifest
+        uses: actions/github-script@v7
+        env:
+          UPSTREAM_PRERELEASE: ${{ needs.prepare.outputs.upstream_prerelease }}
+        with:
+          script: |
+            const current = await github.rest.repos.getContent({
+              ...context.repo,
+              path: '.github/upstream-port-manifest.json',
+              ref: 'main',
+            });
+
+            const manifest = JSON.parse(Buffer.from(current.data.content, 'base64').toString('utf8'));
+            manifest.baseline_prerelease = process.env.UPSTREAM_PRERELEASE === 'true';
+
+            await github.rest.repos.createOrUpdateFileContents({
+              ...context.repo,
+              path: '.github/upstream-port-manifest.json',
+              branch: 'main',
+              message: 'automation: record upstream release state',
+              sha: current.data.sha,
+              content: Buffer.from(JSON.stringify(manifest, null, 2) + '\n').toString('base64'),
+            });
+
+  promote-releases:
+    needs: prepare
+    if: needs.prepare.outputs.action == 'promote'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Promote three matching releases to stable
+        uses: actions/github-script@v7
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          GENERAL_SHA: ${{ needs.prepare.outputs.general_sha }}
+          TLOU2_SHA: ${{ needs.prepare.outputs.tlou2_sha }}
+          RDR2_SHA: ${{ needs.prepare.outputs.rdr2_sha }}
+        with:
+          script: |
+            const variants = [
+              {kind: 'general', sha: process.env.GENERAL_SHA, releaseTag: `mods-${process.env.TAG}-general`},
+              {kind: 'tlou2', sha: process.env.TLOU2_SHA, releaseTag: `mods-${process.env.TAG}-tlou2`},
+              {kind: 'rdr2', sha: process.env.RDR2_SHA, releaseTag: `mods-${process.env.TAG}-rdr2`},
+            ];
+
+            async function resolveTagCommit(tag) {
+              const {data: ref} = await github.rest.git.getRef({
+                ...context.repo,
+                ref: `tags/${tag}`,
+              });
+
+              if (ref.object.type === 'commit') {
+                return ref.object.sha;
+              }
+
+              if (ref.object.type === 'tag') {
+                const {data: tagObject} = await github.rest.git.getTag({
+                  ...context.repo,
+                  tag_sha: ref.object.sha,
+                });
+                return tagObject.object.sha;
+              }
+
+              throw new Error(`Unexpected tag object type for ${tag}: ${ref.object.type}`);
+            }
+
+            const releases = [];
+            for (const variant of variants) {
+              const {data: release} = await github.rest.repos.getReleaseByTag({
+                ...context.repo,
+                tag: variant.releaseTag,
+              });
+
+              const tagCommit = await resolveTagCommit(variant.releaseTag);
+              if (tagCommit !== variant.sha) {
+                throw new Error(`${variant.releaseTag} points to ${tagCommit}, expected ${variant.sha}.`);
+              }
+
+              releases.push({variant, release});
+            }
+
+            for (const {release} of releases) {
+              if (release.prerelease) {
+                const note = `Upstream ${process.env.TAG} is now a stable release; this maintained build has been promoted to stable without rebuilding because the upstream tag commit is unchanged.`;
+                const body = release.body && release.body.includes(note)
+                  ? release.body
+                  : `${release.body || ''}${release.body ? '\n\n' : ''}${note}`;
+
+                await github.rest.repos.updateRelease({
+                  ...context.repo,
+                  release_id: release.id,
+                  body,
+                  draft: false,
+                  prerelease: false,
+                });
+              }
+            }
+
+            const current = await github.rest.repos.getContent({
+              ...context.repo,
+              path: '.github/upstream-port-manifest.json',
+              ref: 'main',
+            });
+
+            const manifest = JSON.parse(Buffer.from(current.data.content, 'base64').toString('utf8'));
+            manifest.baseline_prerelease = false;
+
+            await github.rest.repos.createOrUpdateFileContents({
+              ...context.repo,
+              path: '.github/upstream-port-manifest.json',
+              branch: 'main',
+              message: `automation: promote upstream ${process.env.TAG} baseline to stable`,
+              sha: current.data.sha,
+              content: Buffer.from(JSON.stringify(manifest, null, 2) + '\n').toString('base64'),
+            });
+
   build-candidates:
-    needs: prepare-candidates
-    if: needs.prepare-candidates.outputs.new_release == 'true' && needs.prepare-candidates.outputs.candidate_count != '0'
+    needs: prepare
+    if: (needs.prepare.outputs.action == 'build' || needs.prepare.outputs.action == 'build_baseline') && needs.prepare.outputs.candidate_count != '0'
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare-candidates.outputs.candidate_matrix) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.candidate_matrix) }}
     uses: ./.github/workflows/build-upstream-candidate.yml
     with:
       ref: ${{ matrix.ref }}
       sha: ${{ matrix.sha }}
       kind: ${{ matrix.kind }}
-      upstream_tag: ${{ needs.prepare-candidates.outputs.tag }}
+      upstream_tag: ${{ needs.prepare.outputs.tag }}
 
-  auto-publish-prereleases:
-    needs: [prepare-candidates, build-candidates]
-    if: needs.prepare-candidates.outputs.new_release == 'true' && needs.prepare-candidates.outputs.candidate_count == '3'
+  auto-publish-releases:
+    needs: [prepare, build-candidates]
+    if: (needs.prepare.outputs.action == 'build' || needs.prepare.outputs.action == 'build_baseline') && needs.prepare.outputs.candidate_count == '3'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      issues: write
     steps:
       - name: Download verified candidate packages
         uses: actions/download-artifact@v4
@@ -304,21 +528,25 @@ jobs:
           path: packages
           merge-multiple: true
 
-      - name: Publish three prereleases and advance manifest
+      - name: Publish three releases and advance manifest
         uses: actions/github-script@v7
         env:
-          UPSTREAM_TAG: ${{ needs.prepare-candidates.outputs.tag }}
-          UPSTREAM_SHA: ${{ needs.prepare-candidates.outputs.upstream_sha }}
-          UPSTREAM_RELEASE_URL: ${{ needs.prepare-candidates.outputs.release_url }}
-          GENERAL_SHA: ${{ needs.prepare-candidates.outputs.general_sha }}
-          TLOU2_SHA: ${{ needs.prepare-candidates.outputs.tlou2_sha }}
-          RDR2_SHA: ${{ needs.prepare-candidates.outputs.rdr2_sha }}
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.tag }}
+          UPSTREAM_SHA: ${{ needs.prepare.outputs.upstream_sha }}
+          UPSTREAM_PRERELEASE: ${{ needs.prepare.outputs.upstream_prerelease }}
+          UPSTREAM_RELEASE_URL: ${{ needs.prepare.outputs.release_url }}
+          GENERAL_SHA: ${{ needs.prepare.outputs.general_sha }}
+          TLOU2_SHA: ${{ needs.prepare.outputs.tlou2_sha }}
+          RDR2_SHA: ${{ needs.prepare.outputs.rdr2_sha }}
         with:
           script: |
             const fs = require('fs');
             const crypto = require('crypto');
 
             const tag = process.env.UPSTREAM_TAG;
+            const upstreamPrerelease = process.env.UPSTREAM_PRERELEASE === 'true';
+            const upstreamState = upstreamPrerelease ? 'prerelease' : 'stable release';
+
             const variants = [
               {
                 kind: 'general',
@@ -390,25 +618,38 @@ jobs:
               const existing = allReleases.find(release => release.tag_name === variant.releaseTag);
 
               if (existing && !existing.draft) {
-                if (!existing.prerelease || existing.target_commitish !== variant.sha) {
-                  throw new Error(`Existing release ${variant.releaseTag} does not match the expected automated prerelease.`);
+                const {data: ref} = await github.rest.git.getRef({
+                  ...context.repo,
+                  ref: `tags/${variant.releaseTag}`,
+                });
+
+                let tagCommit = ref.object.sha;
+                if (ref.object.type === 'tag') {
+                  const {data: tagObject} = await github.rest.git.getTag({
+                    ...context.repo,
+                    tag_sha: ref.object.sha,
+                  });
+                  tagCommit = tagObject.object.sha;
                 }
-                core.info(`Release ${variant.releaseTag} already exists and matches; leaving it in place.`);
+
+                if (tagCommit !== variant.sha || existing.prerelease !== upstreamPrerelease) {
+                  throw new Error(`Existing release ${variant.releaseTag} does not match the expected source commit/state.`);
+                }
+
                 prepared.push({release: existing, variant, alreadyPublished: true});
                 continue;
               }
 
-              let release = existing;
               const bodyLines = [
                 `# ${variant.releaseName}`,
                 '',
-                `Automated port of upstream prerelease ${tag}.`,
+                `Automated port of upstream ${upstreamState} ${tag}.`,
                 `Upstream release: ${process.env.UPSTREAM_RELEASE_URL}`,
                 `Upstream commit: \`${process.env.UPSTREAM_SHA}\``,
                 `Variant commit: \`${variant.sha}\``,
                 '',
                 'The port applied cleanly and the Release x64 RTX40-MFG build passed embedded-commit provenance verification.',
-                'This is an automated prerelease; successful compilation is not an in-game compatibility guarantee.',
+                'Successful compilation is not an in-game compatibility guarantee.',
               ];
 
               if (variant.kind === 'rdr2') {
@@ -418,6 +659,7 @@ jobs:
 
               const body = bodyLines.join('\n');
 
+              let release = existing;
               if (!release) {
                 release = (await github.rest.repos.createRelease({
                   ...context.repo,
@@ -425,7 +667,7 @@ jobs:
                   name: variant.releaseName,
                   body,
                   draft: true,
-                  prerelease: true,
+                  prerelease: upstreamPrerelease,
                   target_commitish: variant.sha,
                 })).data;
               } else {
@@ -435,7 +677,7 @@ jobs:
                   name: variant.releaseName,
                   body,
                   draft: true,
-                  prerelease: true,
+                  prerelease: upstreamPrerelease,
                   target_commitish: variant.sha,
                 })).data;
 
@@ -447,13 +689,11 @@ jobs:
                 }
               }
 
-              const files = [
+              for (const file of [
                 variant.asset,
                 `${variant.asset}.sha256`,
                 `candidate-${variant.kind}.json`,
-              ];
-
-              for (const file of files) {
+              ]) {
                 await github.rest.repos.uploadReleaseAsset({
                   ...context.repo,
                   release_id: release.id,
@@ -474,7 +714,7 @@ jobs:
                 ...context.repo,
                 release_id: item.release.id,
                 draft: false,
-                prerelease: true,
+                prerelease: upstreamPrerelease,
               });
             }
 
@@ -488,6 +728,7 @@ jobs:
               upstream_repository: 'wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass',
               baseline_tag: tag,
               baseline_commit: process.env.UPSTREAM_SHA,
+              baseline_prerelease: upstreamPrerelease,
               general_patch_commit: process.env.GENERAL_SHA,
               tlou2_patch_commit: process.env.TLOU2_SHA,
               rdr2_patch_commit: process.env.RDR2_SHA,
