@@ -1,0 +1,70 @@
+name: Build RDR2 v0.8.4
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify checked-out commit
+        id: provenance
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $short = (git rev-parse --short=8 HEAD).Trim().ToLowerInvariant()
+          $expected = "${{ github.sha }}".Trim().ToLowerInvariant()
+
+          Write-Host "Checked-out HEAD : $head"
+          Write-Host "GitHub event SHA : $expected"
+
+          if ($head -ne $expected) {
+            throw "Checkout provenance mismatch. HEAD=$head GITHUB_SHA=$expected"
+          }
+
+          "OPTISCALER_BUILD_SHA=$head" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "OPTISCALER_BUILD_SHORT_SHA=$short" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "short=$short" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Add MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64 RTX40 MFG
+        shell: pwsh
+        run: |
+          msbuild OptiScaler.sln /m:2 /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:OptiScalerRtx40Mfg=true /p:PostBuildEventUseInBuild=false /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSBuild failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Verify binary provenance
+        shell: pwsh
+        run: |
+          & ".\.github\scripts\verify-build-provenance.ps1"
+
+      - name: Hash RDR2 DLL
+        shell: pwsh
+        run: |
+          $dll = ".\x64\Release-RTX40-MFG\OptiScaler.dll"
+          if (-not (Test-Path -LiteralPath $dll)) {
+            throw "RTX40-MFG OptiScaler.dll was not produced."
+          }
+          Get-FileHash -LiteralPath $dll -Algorithm SHA256
+
+      - name: Upload verified RDR2 DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiScaler-RDR2-v0.8.4-${{ steps.provenance.outputs.short }}
+          path: x64/Release-RTX40-MFG/OptiScaler.dll
+          if-no-files-found: error
+          retention-days: 14
