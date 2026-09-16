@@ -4,17 +4,17 @@ This fork maintains three patches on the repaired OptiScaler v0.8.4 baseline:
 
 | Patch | Maintained branch |
 | --- | --- |
-| General ShadowFloor / NR patch | [`main`](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/tree/main) |
-| The Last of Us Part II / Akane compatibility | [`tlou2-shadow-akane`](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/tree/tlou2-shadow-akane) |
-| Red Dead Redemption 2 / PureDark MFG compatibility | [`rdr2-shadow-puredark-mfg`](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/tree/rdr2-shadow-puredark-mfg) |
+| General ShadowFloor / NR patch | `main` |
+| The Last of Us Part II / Akane compatibility | `tlou2-shadow-akane` |
+| Red Dead Redemption 2 / PureDark coexistence | `rdr2-v0.8.4-known-good` |
 
 ## Builds and checks
 
-Use [Validate maintained OptiScaler v0.8.4 branches](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/actions/workflows/validate-v084-branches.yml) for the Release x64 RTX40-MFG build. Select a successful run for the branch you need and download its `OptiScaler-<branch>-RTX40-MFG` DLL artifact. These are DLL artifacts, not complete installation packages.
+The clang-format 20 workflow checks only changed C/C++/Protobuf files, so untouched legacy formatting cannot fail unrelated commits.
 
-The clang-format 20 check covers changed C/C++/Protobuf files. [Release three maintained patches](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/actions/workflows/package_release.yml) builds and packages all three branches after a maintained-branch push or a manual run. Publication waits for every package to build and pass checksum verification.
+The RDR2 branch carries its own manual provenance-checked RTX40-MFG build workflow. It verifies the checked-out commit before building and verifies that the produced OptiScaler DLL embeds that exact commit before publishing the build artifact.
 
-Download the three current ZIPs from [Latest maintained OptiScaler patches](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/releases/tag/game-mods-latest). The release notes and `build-manifest.json` identify the exact commit behind each ZIP; `SHA256SUMS.txt` verifies the downloads. The obsolete ZIPs have been removed. Build validation does not replace in-game testing.
+The rejected RDR2 `999ebf3` branch, the old multi-branch release automation, and the release that instructed `[FrameGen] External=true` are intentionally retired.
 
 ## Project documentation
 
