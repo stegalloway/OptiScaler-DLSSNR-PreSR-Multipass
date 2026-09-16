@@ -2327,6 +2327,11 @@ static void UnhookDevice()
 
 void D3D12Hooks::Hook()
 {
+    if (_wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0)
+    {
+        LOG_INFO("RDR2 PureDark coexistence: skipping global D3D12 export hook");
+        return;
+    }
     std::lock_guard<std::mutex> lock(hookMutex);
 
     LOG_DEBUG("");
@@ -2344,6 +2349,11 @@ void D3D12Hooks::Hook()
 
 void D3D12Hooks::HookAgility(HMODULE module)
 {
+    if (_wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0)
+    {
+        LOG_INFO("RDR2 PureDark coexistence: skipping global D3D12 Agility hook");
+        return;
+    }
     std::lock_guard<std::mutex> lock(agilityMutex);
 
     if (module == nullptr || o_D3D12GetInterface != nullptr)

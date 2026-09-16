@@ -523,6 +523,11 @@ void D3D11Hooks::HookToDevice(ID3D11Device* InDevice) { HookToDeviceLocal(InDevi
 
 void D3D11Hooks::Hook(HMODULE dx11Module)
 {
+    if (_wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0)
+    {
+        LOG_INFO("RDR2 PureDark coexistence: skipping global D3D11 hook");
+        return;
+    }
     if (o_D3D11CreateDevice != nullptr)
         return;
 

@@ -51,6 +51,55 @@ using DlssNr::CalibrationReading;
 
 namespace
 {
+// RDR2/PureDark leaves Present ownership outside OptiScaler, so State::frameCount
+// cannot prove when NR feature-creation work reached the GPU. Track only the
+// native DX12 command lists handed to the NR schedule and advance after that
+// exact list is observed at ResTrack's existing post-ExecuteCommandLists seam.
+std::mutex rdr2NrSubmissionMutex;
+std::set<ID3D12CommandList*> rdr2NrPendingSubmissionLists;
+std::atomic<unsigned long long> rdr2NrSubmissionEpoch { 0 };
+std::atomic_bool rdr2NrEpochAnnounced { false };
+
+bool IsRdr2PureDarkNrClock()
+{
+    return _wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0;
+}
+
+void Rdr2NrSubmitted(UINT count, ID3D12CommandList* const* lists)
+{
+    if (!IsRdr2PureDarkNrClock() || lists == nullptr || count == 0)
+        return;
+
+    bool submittedTrackedList = false;
+    {
+        std::lock_guard<std::mutex> lock(rdr2NrSubmissionMutex);
+        for (UINT i = 0; i < count; ++i)
+        {
+            const auto it = rdr2NrPendingSubmissionLists.find(lists[i]);
+            if (it != rdr2NrPendingSubmissionLists.end())
+            {
+                rdr2NrPendingSubmissionLists.erase(it);
+                submittedTrackedList = true;
+            }
+        }
+    }
+
+    if (submittedTrackedList)
+    {
+        const auto epoch = rdr2NrSubmissionEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (epoch <= 3 || (epoch % 600) == 0)
+            LOG_INFO("RDR2 PureDark coexistence: submitted DLSS command list, NR epoch {}", epoch);
+    }
+}
+
+void ResetRdr2NrEpoch()
+{
+    std::lock_guard<std::mutex> lock(rdr2NrSubmissionMutex);
+    rdr2NrPendingSubmissionLists.clear();
+    rdr2NrSubmissionEpoch.store(0, std::memory_order_release);
+    rdr2NrEpochAnnounced.store(false, std::memory_order_release);
+}
+
 std::recursive_mutex nrOwnersMutex;
 std::vector<DlssNr_Dx12*> nrOwners;
 std::atomic_uint nrCaptureOutstanding { 0 };
@@ -641,6 +690,25 @@ DlssNr::CalibrationReading DlssNr_Dx12::CalibrationStatus()
 
 namespace DlssNr
 {
+unsigned long long SubmissionEpoch_Dx12(ID3D12GraphicsCommandList* commandList)
+{
+    if (!IsRdr2PureDarkNrClock() || commandList == nullptr ||
+        !Config::Instance()->DlssNrEnabled.value_or_default())
+    {
+        return State::Instance().frameCount;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(rdr2NrSubmissionMutex);
+        rdr2NrPendingSubmissionLists.insert(static_cast<ID3D12CommandList*>(commandList));
+    }
+
+    if (!rdr2NrEpochAnnounced.exchange(true, std::memory_order_acq_rel))
+        LOG_INFO("RDR2 PureDark coexistence: NR uses private submitted-command-list epoch");
+
+    return rdr2NrSubmissionEpoch.load(std::memory_order_acquire);
+}
+
 void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
 {
     std::lock_guard lock(nrOwnersMutex);
@@ -651,6 +719,9 @@ void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
 }
 void FinishedPictureSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {
+    // ResTrack invokes this only after the real ExecuteCommandLists call.
+    Rdr2NrSubmitted(count, lists);
+
     std::lock_guard lock(nrOwnersMutex);
     NrNotificationScope notification;
     const auto owners = nrOwners;
@@ -707,5 +778,10 @@ CalibrationReading Calibration()
     return activeNrOwner ? activeNrOwner->CalibrationStatus() : CalibrationReading {};
 }
 
-void Shutdown() { WaitForFinishedPicture(); }
+void Shutdown()
+{
+    WaitForFinishedPicture();
+    if (IsRdr2PureDarkNrClock())
+        ResetRdr2NrEpoch();
+}
 } // namespace DlssNr

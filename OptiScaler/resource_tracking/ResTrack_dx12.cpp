@@ -1889,13 +1889,32 @@ void ResTrack_Dx12::HookLateNrQueue(ID3D12Device* device)
 {
     static std::mutex hookMutex;
     std::lock_guard<std::mutex> lock(hookMutex);
-    HookToQueue(device);
+
+    ID3D12Device* trackingDevice = device;
+    if (_wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0)
+    {
+        ID3D12Device* realDevice = nullptr;
+        if (CheckForRealObject("RDR2 PureDark late-NR device", device, (IUnknown**)&realDevice) &&
+            realDevice != nullptr)
+        {
+            trackingDevice = realDevice;
+            LOG_INFO("RDR2 PureDark coexistence: late-NR tracking uses unwrapped D3D12 device");
+        }
+        else
+        {
+            LOG_INFO("RDR2 PureDark coexistence: late-NR device was already native");
+        }
+    }
+
+    HookToQueue(trackingDevice);
     if (o_LateReset) return;
+
     ID3D12CommandAllocator* allocator = nullptr;
     ID3D12GraphicsCommandList* cmd = nullptr;
-    if (SUCCEEDED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))))
+    if (SUCCEEDED(trackingDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))))
     {
-        if (SUCCEEDED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, nullptr, IID_PPV_ARGS(&cmd))))
+        if (SUCCEEDED(trackingDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, nullptr,
+                                                        IID_PPV_ARGS(&cmd))))
         {
             ID3D12GraphicsCommandList* real = nullptr;
             if (!CheckForRealObject(__FUNCTION__, cmd, (IUnknown**)&real)) real = cmd;

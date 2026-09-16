@@ -7,6 +7,7 @@
 #include "State.h"
 #include <dlssnr/DlssNr_ExposureScan.h>
 #include <dlssnr/DlssNr_Pipeline_Dx12.h>
+#include <shaders/dlssnr/DlssNr_Rdr2Epoch.h>
 
 void IFeature_Dx12::ResourceBarrier(ID3D12GraphicsCommandList* InCommandList, ID3D12Resource* InResource,
                                     D3D12_RESOURCE_STATES InBeforeState, D3D12_RESOURCE_STATES InAfterState) const
@@ -51,7 +52,7 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
 {
     const bool interop = timingQueue != nullptr;
     if (!interop)
-        submissionEpoch = State::Instance().frameCount;
+        submissionEpoch = DlssNr::SubmissionEpoch_Dx12(InCommandList);
     if (timingQueue == nullptr)
         timingQueue = State::Instance().currentCommandQueue;
     if (!IsInited())

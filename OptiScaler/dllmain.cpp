@@ -1858,6 +1858,37 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         Config::Instance()->CheckForUpdate.set_volatile_value(false);
 #endif
 
+        // RDR2 + PureDark coexistence, ported from the known-good 2026-09-15 ASI.
+        // PureDark owns presentation / Streamline / Reflex / frame generation.
+        // OptiScaler keeps NGX interception and device-level D3D12 hooks for SR / NR.
+        const bool rdr2PureDarkCoexistence =
+            _wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0;
+
+        if (rdr2PureDarkCoexistence)
+        {
+            auto* cfg = Config::Instance();
+
+            cfg->FGEnabled.set_volatile_value(false);
+            cfg->FGInput.set_volatile_value(FGInput::NoFG);
+            cfg->FGOutput.set_volatile_value(FGOutput::NoFG);
+            cfg->FGNvngxReplacement.set_volatile_value(FGNvngxReplacement::None);
+
+            // Leave AdaMfgUnlock at the user's configured value. It patches PureDark's
+            // nvngx_dlssg.dll; it does not make OptiScaler the presentation/FG owner.
+#if defined(OPTISCALER_RTX40_MFG)
+            LOG_INFO("RDR2 PureDark coexistence: built-in RTX40 MFG unlock is {}",
+                     cfg->FGDLSSGAdaMfgUnlock.value_or_default() ? "enabled" : "disabled");
+#endif
+
+            cfg->StreamlineSpoofing.set_volatile_value(false);
+            cfg->DxgiSpoofing.set_volatile_value(false);
+            cfg->UseFakenvapi.set_volatile_value(false);
+            cfg->OverlayMenu.set_volatile_value(false);
+
+            LOG_INFO("RDR2 PureDark coexistence v0.8.4: PureDark owns DXGI/Streamline/Reflex/FG; "
+                     "OptiScaler keeps NGX SR/NR");
+        }
+
         // Initial state of FG
         State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();
         State::Instance().activeFgOutput = Config::Instance()->FGOutput.value_or_default();

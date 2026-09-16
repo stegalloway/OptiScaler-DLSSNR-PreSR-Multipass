@@ -35,6 +35,21 @@ static bool IsSL1AndFGActive()
     return state.streamlineVersion.major == 1 && state.activeFgInput == FGInput::DLSSG;
 }
 
+static bool IsRdr2PureDark()
+{
+    return _wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0;
+}
+
+static bool IsRdr2PureDarkMfg()
+{
+#if defined(OPTISCALER_RTX40_MFG)
+    return IsRdr2PureDark() &&
+           Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default();
+#else
+    return false;
+#endif
+}
+
 static void PatchSL1PluginJson(nlohmann::json& configJson)
 {
     if (!IsSL1AndFGActive())
@@ -1159,8 +1174,23 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 
     LOG_TRACE("DLSSG Modified Mode: {}", magic_enum::enum_name(newOptions.mode));
 
-    if (dlssgPotentiallyActive && state.streamlineVersion >= feature_version { 2, 7, 1 })
+    const bool rdr2PureDarkMfgBridge = IsRdr2PureDarkMfg();
+    const bool streamlineSupportsMfg =
+        state.streamlineVersion >= feature_version { 2, 7, 1 };
+
+    if (dlssgPotentiallyActive && (streamlineSupportsMfg || rdr2PureDarkMfgBridge))
     {
+        if (rdr2PureDarkMfgBridge && !streamlineSupportsMfg)
+        {
+            static bool loggedRdr2VersionBypass = false;
+            if (!loggedRdr2VersionBypass)
+            {
+                loggedRdr2VersionBypass = true;
+                LOG_INFO("RDR2 PureDark MFG coexistence: bypassing stale Streamline {}.{}.{} version gate",
+                         state.streamlineVersion.major, state.streamlineVersion.minor,
+                         state.streamlineVersion.patch);
+            }
+        }
 #if defined(OPTISCALER_RTX40_MFG)
         MfgUnlock::TryApply();
         if (const auto maximum = MfgUnlock::UnlockedMax(); maximum > 0)
@@ -1447,6 +1477,29 @@ void* StreamlineHooks::hkdlss_slGetPluginFunction(const char* functionName)
 
 void* StreamlineHooks::hkdlssg_slGetPluginFunction(const char* functionName)
 {
+    // PureDark owns RDR2's Streamline stack. Intercept only the two native
+    // DLSS-G calls needed by the Ada MFG unlock/count override.
+    if (IsRdr2PureDark())
+    {
+        if (strcmp(functionName, "slDLSSGSetOptions") == 0)
+        {
+            o_slDLSSGSetOptions =
+                (decltype(&slDLSSGSetOptions)) o_dlssg_slGetPluginFunction(functionName);
+            LOG_INFO("RDR2 PureDark MFG coexistence: intercepting slDLSSGSetOptions only");
+            return o_slDLSSGSetOptions ? &hkslDLSSGSetOptions : nullptr;
+        }
+
+        if (strcmp(functionName, "slDLSSGGetState") == 0)
+        {
+            o_slDLSSGGetState =
+                (decltype(&slDLSSGGetState)) o_dlssg_slGetPluginFunction(functionName);
+            LOG_INFO("RDR2 PureDark MFG coexistence: intercepting slDLSSGGetState only");
+            return o_slDLSSGGetState ? &hkslDLSSGGetState : nullptr;
+        }
+
+        return o_dlssg_slGetPluginFunction(functionName);
+    }
+
     if (auto* hook = DlssNr::StreamlinePicture::Wrap(functionName, o_dlssg_slGetPluginFunction))
         return hook;
     // LOG_DEBUG("{}", functionName);
@@ -1873,6 +1926,11 @@ void StreamlineHooks::unhookInterposer()
 // Call it just after sl.interposer's load or if sl.interposer is already loaded
 void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline interposer native");
+        return;
+    }
     LOG_FUNC();
 
     if (!slInterposer)
@@ -2094,6 +2152,11 @@ void StreamlineHooks::unhookDlss()
 
 void StreamlineHooks::hookDlss(HMODULE slDlss)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline DLSS native");
+        return;
+    }
     LOG_FUNC();
 
     if (!slDlss)
@@ -2198,6 +2261,11 @@ void StreamlineHooks::unhookLocalDlssg()
 
 void StreamlineHooks::hookLocalDlssg(HMODULE slDlssg)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline local DLSS-G native");
+        return;
+    }
     LOG_FUNC();
 
     if (!slDlssg)
@@ -2249,6 +2317,11 @@ void StreamlineHooks::unhookReflex()
 
 void StreamlineHooks::hookReflex(HMODULE slReflex)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline Reflex native");
+        return;
+    }
     LOG_FUNC();
 
     if (!slReflex)
@@ -2305,6 +2378,11 @@ void StreamlineHooks::unhookPcl()
 
 void StreamlineHooks::hookPcl(HMODULE slPcl)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline PCL native");
+        return;
+    }
     LOG_FUNC();
 
     if (!slPcl)
@@ -2363,6 +2441,11 @@ void StreamlineHooks::unhookCommon()
 
 void StreamlineHooks::hookCommon(HMODULE slCommon)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline common native");
+        return;
+    }
     LOG_FUNC();
 
     if (!slCommon)
