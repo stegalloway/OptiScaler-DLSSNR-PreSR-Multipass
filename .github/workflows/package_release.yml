@@ -1,35 +1,171 @@
-name: Package NR Build
+name: Release three maintained patches
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Package version label'
-        required: true
-        default: 'nr-dev'
-        type: string
+  push:
+    branches: [main, tlou2-shadow-akane, rdr2-shadow-puredark-mfg]
+
+concurrency:
+  group: maintained-patches-release
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  package:
-    runs-on: windows-latest
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.refs.outputs.matrix }}
+      main_sha: ${{ steps.refs.outputs.main_sha }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/github-script@v7
+        id: refs
         with:
-          submodules: true
-      - name: Set up MSBuild
-        uses: microsoft/setup-msbuild@v2
-      - name: Package
-        shell: powershell
+          script: |
+            const variants = [
+              {branch: 'main', asset: 'ShadowFloor-Latest'},
+              {branch: 'tlou2-shadow-akane', asset: 'TLOU2-ShadowFloor-Akane-Latest'},
+              {branch: 'rdr2-shadow-puredark-mfg', asset: 'RDR2-ShadowFloor-PureDark-Epoch-MFG-Latest'}
+            ];
+            for (const variant of variants) {
+              const {data} = await github.rest.git.getRef({...context.repo, ref: `heads/${variant.branch}`});
+              variant.sha = data.object.sha;
+            }
+            core.setOutput('matrix', JSON.stringify({include: variants}));
+            core.setOutput('main_sha', variants[0].sha);
+
+  package:
+    needs: resolve
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+          submodules: recursive
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build Release x64 RTX40 MFG
+        shell: pwsh
+        run: |
+          msbuild OptiScaler.sln /m:2 /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:OptiScalerRtx40Mfg=true /p:PostBuildEventUseInBuild=false /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE" }
+      - name: Package and verify archive
+        shell: pwsh
         env:
-          PACKAGE_VERSION: ${{ inputs.version }}
-        run: ./package_release.ps1 -Version $env:PACKAGE_VERSION
-      - name: Upload archive
-        uses: actions/upload-artifact@v4
+          PATCH_BRANCH: ${{ matrix.branch }}
+          PATCH_SHA: ${{ matrix.sha }}
+          ASSET_NAME: ${{ matrix.asset }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./package_release.ps1 -Version $env:PATCH_BRANCH -EnableRtx40Mfg -SkipBuild
+          $source = "release/OptiScaler-NR-$env:PATCH_BRANCH.zip"
+          $target = "release/$env:ASSET_NAME.zip"
+          Move-Item -LiteralPath $source -Destination $target
+          $verify = Join-Path $env:RUNNER_TEMP 'package-verification'
+          Expand-Archive -LiteralPath $target -DestinationPath $verify
+          if (-not (Test-Path "$verify/OptiScaler.dll")) { throw 'Archive is missing OptiScaler.dll' }
+          if (-not (Test-Path "$verify/OptiScaler.ini")) { throw 'Archive is missing OptiScaler.ini' }
+          foreach ($line in (Get-Content -LiteralPath "$verify/SHA256SUMS.txt")) {
+            if ($line -notmatch '^([A-Fa-f0-9]{64}) \*(.+)$') { throw 'Invalid package checksum manifest' }
+            $expected = $Matches[1]
+            $file = Join-Path $verify $Matches[2]
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected) {
+              throw "Checksum mismatch: $file"
+            }
+          }
+          [ordered]@{
+            branch = $env:PATCH_BRANCH
+            commit = $env:PATCH_SHA
+            asset = "$env:ASSET_NAME.zip"
+            sha256 = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+            configuration = 'Release x64 RTX40-MFG'
+          } | ConvertTo-Json | Set-Content -LiteralPath "release/$env:ASSET_NAME.json" -Encoding utf8
+      - uses: actions/upload-artifact@v4
         with:
-          name: OptiScaler-NR-${{ inputs.version }}
-          path: release/*.zip
+          name: package-${{ matrix.branch }}
+          path: |
+            release/${{ matrix.asset }}.zip
+            release/${{ matrix.asset }}.json
           if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: [resolve, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          path: packages
+          merge-multiple: true
+      - name: Verify all packages and publish release
+        uses: actions/github-script@v7
+        env:
+          EXPECTED_MATRIX: ${{ needs.resolve.outputs.matrix }}
+          MAIN_SHA: ${{ needs.resolve.outputs.main_sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const variants = JSON.parse(process.env.EXPECTED_MATRIX).include;
+            const records = [];
+            for (const variant of variants) {
+              const record = JSON.parse(fs.readFileSync(`packages/${variant.asset}.json`, 'utf8').replace(/^\uFEFF/, ''));
+              const bytes = fs.readFileSync(`packages/${variant.asset}.zip`);
+              const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+              if (record.commit !== variant.sha || record.branch !== variant.branch || record.asset !== `${variant.asset}.zip` || record.sha256 !== hash) {
+                throw new Error(`Package identity or checksum mismatch: ${variant.branch}`);
+              }
+              records.push(record);
+            }
+            fs.writeFileSync('packages/build-manifest.json', JSON.stringify(records, null, 2) + '\n');
+            fs.writeFileSync('packages/SHA256SUMS.txt', records.map(r => `${r.sha256}  ${r.asset}`).join('\n') + '\n');
+            const tag = 'game-mods-latest';
+            const body = [
+              '# Latest maintained OptiScaler patches',
+              '',
+              'All three packages were built from the exact commits below using Release x64 RTX40-MFG. ZIP contents and SHA-256 checksums were verified before publication.',
+              '',
+              ...records.map(r => `- **${r.asset}** — \`${r.branch}\` at [\`${r.commit}\`](https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${r.commit})`),
+              '',
+              'Extract the entire ZIP and follow INSTALL-DLSSNR.md. NVIDIA NR/FG runtime binaries are not bundled; retain your existing runtime installation. The RTX40-MFG feature is compiled in but remains optional. Default INI settings are preserved.',
+              '',
+              'For RDR2 PureDark coexistence, enable `[FrameGen] External=true` as documented in the included INI and restart the game. Successful compilation is not an in-game compatibility test.',
+              '',
+              `[Build and packaging run](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              '',
+              'The release tag points to the main patch commit. The other two package commits are recorded above and in build-manifest.json.'
+            ].join('\n');
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({...context.repo, tag})).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (release) {
+              await github.rest.repos.updateRelease({...context.repo, release_id: release.id, draft: true});
+              for (const asset of release.assets) {
+                await github.rest.repos.deleteReleaseAsset({...context.repo, asset_id: asset.id});
+              }
+            }
+            try {
+              await github.rest.git.updateRef({...context.repo, ref: `tags/${tag}`, sha: process.env.MAIN_SHA, force: true});
+            } catch (error) {
+              if (error.status !== 422 && error.status !== 404) throw error;
+              await github.rest.git.createRef({...context.repo, ref: `refs/tags/${tag}`, sha: process.env.MAIN_SHA});
+            }
+            if (!release) {
+              release = (await github.rest.repos.createRelease({...context.repo, tag_name: tag, name: 'Latest maintained OptiScaler patches', body, draft: true})).data;
+            }
+            for (const name of [...records.map(r => r.asset), 'build-manifest.json', 'SHA256SUMS.txt']) {
+              await github.rest.repos.uploadReleaseAsset({...context.repo, release_id: release.id, name, data: fs.readFileSync(`packages/${name}`)});
+            }
+            await github.rest.repos.updateRelease({...context.repo, release_id: release.id, name: 'Latest maintained OptiScaler patches', body, draft: false, prerelease: false, make_latest: 'true'});
+            core.summary.addLink('Download all three maintained patches', release.html_url);
+            await core.summary.write();
