@@ -12,9 +12,9 @@ This fork maintains three patches on the repaired OptiScaler v0.8.4 baseline:
 
 Use [Validate maintained OptiScaler v0.8.4 branches](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/actions/workflows/validate-v084-branches.yml) for the Release x64 RTX40-MFG build. Select a successful run for the branch you need and download its `OptiScaler-<branch>-RTX40-MFG` DLL artifact. These are DLL artifacts, not complete installation packages.
 
-The clang-format 20 check covers changed C/C++/Protobuf files. **Package NR Build** remains available for manual packaging; its existing default is the standard NR build, without the optional RTX40-MFG feature.
+The clang-format 20 check covers changed C/C++/Protobuf files. [Release three maintained patches](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/actions/workflows/package_release.yml) builds and packages all three branches after a maintained-branch push or a manual run. Publication waits for every package to build and pass checksum verification.
 
-The `game-mods-latest` release predates the repaired branch tips. Its ZIP files are historical downloads, not evidence of the current validated builds. Current build validation does not replace in-game testing.
+Download the three current ZIPs from [Latest maintained OptiScaler patches](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/releases/tag/game-mods-latest). The release notes and `build-manifest.json` identify the exact commit behind each ZIP; `SHA256SUMS.txt` verifies the downloads. The obsolete ZIPs have been removed. Build validation does not replace in-game testing.
 
 ## Project documentation
 
