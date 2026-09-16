@@ -225,3 +225,30 @@ jobs:
         
       continue-on-error: false
         
+
+    - name: Verify checked-out commit
+      shell: powershell
+      run: |
+        $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+        $short = (git rev-parse --short=8 HEAD).Trim().ToLowerInvariant()
+        $expected = "${{ github.sha }}".Trim().ToLowerInvariant()
+
+        Write-Host "Checked-out HEAD : $head"
+        Write-Host "GitHub event SHA : $expected"
+        Write-Host "Embedded short SHA expected: $short"
+
+        if ($head -ne $expected) {
+          Write-Error "Checkout provenance mismatch. HEAD=$head GITHUB_SHA=$expected"
+          exit 1
+        }
+
+        "OPTISCALER_BUILD_SHA=$head" |
+          Out-File -FilePath $env:GITHUB_ENV -Append
+
+        "OPTISCALER_BUILD_SHORT_SHA=$short" |
+          Out-File -FilePath $env:GITHUB_ENV -Append
+
+    - name: Verify binary provenance
+      shell: powershell
+      run: |
+        & ".\.github\scripts\verify-build-provenance.ps1"

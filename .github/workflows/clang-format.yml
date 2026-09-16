@@ -1,5 +1,11 @@
 name: clang-format Check
-on: [push, pull_request]
+on:
+  push:
+    paths-ignore:
+      - '.github/**'
+  pull_request:
+    paths-ignore:
+      - '.github/**'
 jobs:
   formatting-check:
     name: Formatting Check
