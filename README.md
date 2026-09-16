@@ -1,3 +1,27 @@
+# Three maintained OptiScaler patches
+
+This fork maintains three patches on the repaired OptiScaler v0.8.4 baseline:
+
+| Patch | Maintained branch |
+| --- | --- |
+| General ShadowFloor / NR patch | [`main`](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/tree/main) |
+| The Last of Us Part II / Akane compatibility | [`tlou2-shadow-akane`](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/tree/tlou2-shadow-akane) |
+| Red Dead Redemption 2 / PureDark MFG compatibility | [`rdr2-shadow-puredark-mfg`](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/tree/rdr2-shadow-puredark-mfg) |
+
+## Builds and checks
+
+Use [Validate maintained OptiScaler v0.8.4 branches](https://github.com/stegalloway/OptiScaler-DLSSNR-PreSR-Multipass/actions/workflows/validate-v084-branches.yml) for the Release x64 RTX40-MFG build. Select a successful run for the branch you need and download its `OptiScaler-<branch>-RTX40-MFG` DLL artifact. These are DLL artifacts, not complete installation packages.
+
+The clang-format 20 check covers changed C/C++/Protobuf files. **Package NR Build** remains available for manual packaging; its existing default is the standard NR build, without the optional RTX40-MFG feature.
+
+The `game-mods-latest` release predates the repaired branch tips. Its ZIP files are historical downloads, not evidence of the current validated builds. Current build validation does not replace in-game testing.
+
+## Project documentation
+
+See [installation](INSTALL-DLSSNR.md), [NR controls](docs/NR-PIPELINE-UI.md), [RTX40-MFG](docs/RTX40-MFG.md), and [credits](docs/CREDITS.md). The upstream documentation and credits below are retained for reference; upstream download links do not contain these fork-specific patches.
+
+---
+
 <div align="center">
 
   ![Logo](https://github.com/user-attachments/assets/c7dad5da-0b29-4710-8a57-b58e4e407abd)
