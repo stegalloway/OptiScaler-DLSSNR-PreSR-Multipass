@@ -1,0 +1,91 @@
+name: Build upstream candidate
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Candidate branch or commit to build'
+        required: true
+        type: string
+  push:
+    branches:
+      - 'candidate/**-general'
+      - 'candidate/**-tlou2'
+      - 'candidate/**-rdr2'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify checkout provenance
+        id: meta
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+
+          if ("${{ github.event_name }}" -eq "push") {
+              $expected = "${{ github.sha }}".Trim().ToLowerInvariant()
+              if ($head -ne $expected) {
+                  throw "Checkout provenance mismatch. HEAD=$head GITHUB_SHA=$expected"
+              }
+          }
+
+          $short = (git rev-parse --short=8 HEAD).Trim().ToLowerInvariant()
+          $sourceRef = "${{ inputs.ref }}"
+          if ([string]::IsNullOrWhiteSpace($sourceRef)) {
+              $sourceRef = "${{ github.ref_name }}"
+          }
+          $safeRef = $sourceRef -replace '[^A-Za-z0-9._-]', '-'
+
+          "short=$short" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "safe_ref=$safeRef" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Add MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64 RTX40 MFG
+        shell: pwsh
+        run: |
+          msbuild OptiScaler.sln /m:2 /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:OptiScalerRtx40Mfg=true /p:PostBuildEventUseInBuild=false /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) {
+              throw "MSBuild failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Verify embedded candidate commit
+        shell: pwsh
+        run: |
+          $dll = ".\x64\Release-RTX40-MFG\OptiScaler.dll"
+          if (-not (Test-Path -LiteralPath $dll)) {
+              throw "RTX40-MFG OptiScaler.dll was not produced."
+          }
+
+          $short = "${{ steps.meta.outputs.short }}".ToLowerInvariant()
+          $needle = "($short)"
+          $bytes = [IO.File]::ReadAllBytes($dll)
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes).ToLowerInvariant()
+          $unicode = [Text.Encoding]::Unicode.GetString($bytes).ToLowerInvariant()
+
+          if (-not ($ascii.Contains($needle) -or $unicode.Contains($needle))) {
+              throw "Built DLL does not embed candidate commit $short."
+          }
+
+          Get-FileHash -LiteralPath $dll -Algorithm SHA256
+
+      - name: Upload candidate DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: OptiScaler-${{ steps.meta.outputs.safe_ref }}-${{ steps.meta.outputs.short }}
+          path: x64/Release-RTX40-MFG/OptiScaler.dll
+          if-no-files-found: error
+          retention-days: 30

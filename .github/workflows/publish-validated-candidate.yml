@@ -1,0 +1,313 @@
+name: Publish validated upstream candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream release tag, for example v0.8.5'
+        required: true
+        type: string
+      confirmation:
+        description: 'Type PUBLISH after all three candidate builds have been tested'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.refs.outputs.tag }}
+      upstream_sha: ${{ steps.refs.outputs.upstream_sha }}
+      general_sha: ${{ steps.refs.outputs.general_sha }}
+      tlou2_sha: ${{ steps.refs.outputs.tlou2_sha }}
+      rdr2_sha: ${{ steps.refs.outputs.rdr2_sha }}
+      matrix: ${{ steps.refs.outputs.matrix }}
+    steps:
+      - name: Resolve exact candidate commits
+        id: refs
+        uses: actions/github-script@v7
+        env:
+          TAG: ${{ inputs.upstream_tag }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        with:
+          script: |
+            const tag = process.env.TAG;
+            if (process.env.CONFIRMATION !== 'PUBLISH') {
+              core.setFailed('Confirmation must be exactly PUBLISH.');
+              return;
+            }
+
+            if (!/^v\d+\.\d+\.\d+(?:[.-][A-Za-z0-9._-]+)?$/.test(tag)) {
+              core.setFailed(`Unexpected upstream tag: ${tag}`);
+              return;
+            }
+
+            const branches = {
+              general: `candidate/${tag}-general`,
+              tlou2: `candidate/${tag}-tlou2`,
+              rdr2: `candidate/${tag}-rdr2`,
+            };
+
+            const refs = {};
+            for (const [kind, branch] of Object.entries(branches)) {
+              try {
+                const {data} = await github.rest.git.getRef({
+                  ...context.repo,
+                  ref: `heads/${branch}`,
+                });
+                refs[kind] = data.object.sha;
+              } catch (error) {
+                if (error.status === 404) {
+                  core.setFailed(`Missing candidate branch: ${branch}`);
+                  return;
+                }
+                throw error;
+              }
+            }
+
+            const upstreamRepo = 'wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass';
+            const [owner, repo] = upstreamRepo.split('/');
+            const {data: tagRef} = await github.rest.git.getRef({
+              owner,
+              repo,
+              ref: `tags/${tag}`,
+            });
+
+            let upstreamSha = tagRef.object.sha;
+            if (tagRef.object.type === 'tag') {
+              const {data: tagObject} = await github.rest.git.getTag({
+                owner,
+                repo,
+                tag_sha: tagRef.object.sha,
+              });
+              upstreamSha = tagObject.object.sha;
+            }
+
+            const commits = {};
+            for (const [kind, sha] of Object.entries(refs)) {
+              const {data} = await github.rest.repos.getCommit({
+                ...context.repo,
+                ref: sha,
+              });
+              commits[kind] = data;
+            }
+
+            if (commits.general.parents.length !== 1 || commits.general.parents[0].sha !== upstreamSha) {
+              core.setFailed('General candidate must be exactly one patch commit on top of the upstream release commit. Squash/fix it before publishing.');
+              return;
+            }
+            if (commits.tlou2.parents.length !== 1 || commits.tlou2.parents[0].sha !== refs.general) {
+              core.setFailed('TLOU2 candidate must be exactly one patch commit on top of the general candidate.');
+              return;
+            }
+            if (commits.rdr2.parents.length !== 1 || commits.rdr2.parents[0].sha !== refs.general) {
+              core.setFailed('RDR2 candidate must be exactly one patch commit on top of the general candidate.');
+              return;
+            }
+
+            const matrix = [
+              {kind: 'general', branch: branches.general, sha: refs.general, asset: `OptiScaler-General-${tag}.zip`},
+              {kind: 'tlou2', branch: branches.tlou2, sha: refs.tlou2, asset: `OptiScaler-TLOU2-${tag}.zip`},
+              {kind: 'rdr2', branch: branches.rdr2, sha: refs.rdr2, asset: `OptiScaler-RDR2-${tag}.zip`},
+            ];
+
+            core.setOutput('tag', tag);
+            core.setOutput('upstream_sha', upstreamSha);
+            core.setOutput('general_sha', refs.general);
+            core.setOutput('tlou2_sha', refs.tlou2);
+            core.setOutput('rdr2_sha', refs.rdr2);
+            core.setOutput('matrix', JSON.stringify({include: matrix}));
+
+  build:
+    needs: resolve
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.sha }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify checkout
+        shell: pwsh
+        run: |
+          $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = "${{ matrix.sha }}".Trim().ToLowerInvariant()
+          if ($head -ne $expected) {
+              throw "Checkout mismatch. HEAD=$head EXPECTED=$expected"
+          }
+
+      - name: Add MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64 RTX40 MFG
+        shell: pwsh
+        run: |
+          msbuild OptiScaler.sln /m:2 /t:Rebuild /p:Configuration=Release /p:Platform=x64 /p:OptiScalerRtx40Mfg=true /p:PostBuildEventUseInBuild=false /verbosity:minimal
+          if ($LASTEXITCODE -ne 0) {
+              throw "MSBuild failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Verify binary provenance and package
+        shell: pwsh
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          KIND: ${{ matrix.kind }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          $dll = ".\x64\Release-RTX40-MFG\OptiScaler.dll"
+          $short = (git rev-parse --short=8 HEAD).Trim().ToLowerInvariant()
+          $needle = "($short)"
+          $bytes = [IO.File]::ReadAllBytes($dll)
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes).ToLowerInvariant()
+          $unicode = [Text.Encoding]::Unicode.GetString($bytes).ToLowerInvariant()
+
+          if (-not ($ascii.Contains($needle) -or $unicode.Contains($needle))) {
+              throw "Built DLL does not embed candidate commit $short."
+          }
+
+          $packageVersion = "validated-$($env:TAG)-$($env:KIND)"
+          .\package_release.ps1 -Version $packageVersion -EnableRtx40Mfg -SkipBuild
+
+          $source = ".\release\OptiScaler-NR-$packageVersion.zip"
+          if (-not (Test-Path -LiteralPath $source)) {
+              throw "Package script did not create $source"
+          }
+
+          Move-Item -LiteralPath $source -Destination ".\release\$($env:ASSET)"
+          $hash = (Get-FileHash -LiteralPath ".\release\$($env:ASSET)" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($env:ASSET)" | Set-Content -LiteralPath ".\release\$($env:ASSET).sha256" -Encoding ascii
+
+      - name: Upload verified package
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-${{ matrix.kind }}
+          path: |
+            release/${{ matrix.asset }}
+            release/${{ matrix.asset }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download verified packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: publish-*
+          path: packages
+          merge-multiple: true
+
+      - name: Publish release and advance port manifest
+        uses: actions/github-script@v7
+        env:
+          UPSTREAM_TAG: ${{ needs.resolve.outputs.tag }}
+          UPSTREAM_SHA: ${{ needs.resolve.outputs.upstream_sha }}
+          GENERAL_SHA: ${{ needs.resolve.outputs.general_sha }}
+          TLOU2_SHA: ${{ needs.resolve.outputs.tlou2_sha }}
+          RDR2_SHA: ${{ needs.resolve.outputs.rdr2_sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+            const tag = process.env.UPSTREAM_TAG;
+            const releaseTag = `mods-${tag}`;
+
+            try {
+              await github.rest.repos.getReleaseByTag({...context.repo, tag: releaseTag});
+              core.setFailed(`Release ${releaseTag} already exists; refusing to overwrite it.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            const assets = [
+              `OptiScaler-General-${tag}.zip`,
+              `OptiScaler-TLOU2-${tag}.zip`,
+              `OptiScaler-RDR2-${tag}.zip`,
+            ];
+
+            const checksumLines = [];
+            for (const asset of assets) {
+              const bytes = fs.readFileSync(`packages/${asset}`);
+              const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+              checksumLines.push(`${hash}  ${asset}`);
+            }
+
+            fs.writeFileSync('packages/SHA256SUMS.txt', checksumLines.join('\n') + '\n');
+
+            const manifest = {
+              upstream_tag: tag,
+              upstream_commit: process.env.UPSTREAM_SHA,
+              general_commit: process.env.GENERAL_SHA,
+              tlou2_commit: process.env.TLOU2_SHA,
+              rdr2_commit: process.env.RDR2_SHA,
+            };
+            fs.writeFileSync('packages/build-manifest.json', JSON.stringify(manifest, null, 2) + '\n');
+
+            const body = [
+              `# Maintained OptiScaler patches for upstream ${tag}`,
+              '',
+              `Upstream release: https://github.com/wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass/releases/tag/${tag}`,
+              `Upstream commit: \`${process.env.UPSTREAM_SHA}\``,
+              '',
+              `- General: \`${process.env.GENERAL_SHA}\``,
+              `- TLOU2 / Akane: \`${process.env.TLOU2_SHA}\``,
+              `- RDR2 / PureDark: \`${process.env.RDR2_SHA}\``,
+              '',
+              'These packages were published only after manual validation of the candidate builds.',
+              'RDR2 does not use the rejected generic `[FrameGen] External=true` ownership path.',
+            ].join('\n');
+
+            const {data: release} = await github.rest.repos.createRelease({
+              ...context.repo,
+              tag_name: releaseTag,
+              name: `Maintained patches â€” ${tag}`,
+              body,
+              draft: false,
+              prerelease: false,
+              target_commitish: process.env.GENERAL_SHA,
+            });
+
+            for (const asset of [...assets, 'SHA256SUMS.txt', 'build-manifest.json']) {
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo,
+                release_id: release.id,
+                name: asset,
+                data: fs.readFileSync(`packages/${asset}`),
+              });
+            }
+
+            const current = await github.rest.repos.getContent({
+              ...context.repo,
+              path: '.github/upstream-port-manifest.json',
+              ref: 'main',
+            });
+
+            const nextManifest = {
+              upstream_repository: 'wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass',
+              baseline_tag: tag,
+              baseline_commit: process.env.UPSTREAM_SHA,
+              general_patch_commit: process.env.GENERAL_SHA,
+              tlou2_patch_commit: process.env.TLOU2_SHA,
+              rdr2_patch_commit: process.env.RDR2_SHA,
+            };
+
+            await github.rest.repos.createOrUpdateFileContents({
+              ...context.repo,
+              path: '.github/upstream-port-manifest.json',
+              branch: 'main',
+              message: `automation: advance upstream port baseline to ${tag}`,
+              sha: current.data.sha,
+              content: Buffer.from(JSON.stringify(nextManifest, null, 2) + '\n').toString('base64'),
+            });

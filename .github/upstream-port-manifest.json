@@ -1,0 +1,8 @@
+{
+  "upstream_repository": "wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass",
+  "baseline_tag": "v0.8.4",
+  "baseline_commit": "8802b2b470db0462fa1ed03a125e793a7c06d735",
+  "general_patch_commit": "fd341e277cdbba44577140f30160e75899541bfa",
+  "tlou2_patch_commit": "f1db369c23d62d8a93318f0c4f4e484817f90e23",
+  "rdr2_patch_commit": "c901d5a04c57f32ab5d17ddf81c39bcc0622e28a"
+}
