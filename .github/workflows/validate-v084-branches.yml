@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - shadowfloor
       - tlou2-shadow-akane
       - rdr2-shadow-puredark-mfg
 
