@@ -272,7 +272,7 @@ jobs:
             const {data: release} = await github.rest.repos.createRelease({
               ...context.repo,
               tag_name: releaseTag,
-              name: `Maintained patches â€” ${tag}`,
+              name: `Maintained patches - ${tag}`,
               body,
               draft: false,
               prerelease: false,

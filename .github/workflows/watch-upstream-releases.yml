@@ -191,7 +191,7 @@ jobs:
             }
 
             const branchLine = (label, branch, status) =>
-              `- ${label}: **${status}**${status === 'success' ? ` â€” \`${branch}\`` : ''}`;
+              `- ${label}: **${status}**${status === 'success' ? ` - \`${branch}\`` : ''}`;
 
             const body = [
               `Detected upstream release [${process.env.RELEASE_NAME}](${process.env.RELEASE_URL}).`,
