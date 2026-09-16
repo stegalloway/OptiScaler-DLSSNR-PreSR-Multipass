@@ -1,17 +1,46 @@
-name: Build upstream candidate
+name: Build upstream candidate package
 
 on:
   workflow_call:
     inputs:
       ref:
-        description: 'Candidate branch or commit to build'
+        description: 'Candidate branch name'
         required: true
         type: string
-  push:
-    branches:
-      - 'candidate/**-general'
-      - 'candidate/**-tlou2'
-      - 'candidate/**-rdr2'
+      sha:
+        description: 'Exact candidate commit SHA'
+        required: true
+        type: string
+      kind:
+        description: 'general, tlou2, or rdr2'
+        required: true
+        type: string
+      upstream_tag:
+        description: 'Upstream prerelease tag'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Candidate branch name'
+        required: true
+        type: string
+      sha:
+        description: 'Exact candidate commit SHA'
+        required: true
+        type: string
+      kind:
+        description: 'general, tlou2, or rdr2'
+        required: true
+        type: choice
+        options:
+          - general
+          - tlou2
+          - rdr2
+      upstream_tag:
+        description: 'Upstream prerelease tag, for example v0.8.5'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -24,32 +53,36 @@ jobs:
       - name: Checkout exact candidate
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.sha }}
           fetch-depth: 0
           submodules: recursive
 
-      - name: Verify checkout provenance
+      - name: Verify checkout and inputs
         id: meta
         shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ inputs.sha }}
+          SOURCE_REF: ${{ inputs.ref }}
+          KIND: ${{ inputs.kind }}
+          TAG: ${{ inputs.upstream_tag }}
         run: |
           $head = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = $env:EXPECTED_SHA.Trim().ToLowerInvariant()
 
-          if ("${{ github.event_name }}" -eq "push") {
-              $expected = "${{ github.sha }}".Trim().ToLowerInvariant()
-              if ($head -ne $expected) {
-                  throw "Checkout provenance mismatch. HEAD=$head GITHUB_SHA=$expected"
-              }
+          if ($head -ne $expected) {
+              throw "Checkout provenance mismatch. HEAD=$head EXPECTED=$expected"
+          }
+
+          if ($env:KIND -notin @("general", "tlou2", "rdr2")) {
+              throw "Unexpected candidate kind: $($env:KIND)"
+          }
+
+          if ($env:TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$') {
+              throw "Unexpected upstream tag: $($env:TAG)"
           }
 
           $short = (git rev-parse --short=8 HEAD).Trim().ToLowerInvariant()
-          $sourceRef = "${{ inputs.ref }}"
-          if ([string]::IsNullOrWhiteSpace($sourceRef)) {
-              $sourceRef = "${{ github.ref_name }}"
-          }
-          $safeRef = $sourceRef -replace '[^A-Za-z0-9._-]', '-'
-
           "short=$short" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "safe_ref=$safeRef" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Add MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -62,8 +95,13 @@ jobs:
               throw "MSBuild failed with exit code $LASTEXITCODE"
           }
 
-      - name: Verify embedded candidate commit
+      - name: Verify binary provenance and package
         shell: pwsh
+        env:
+          SOURCE_REF: ${{ inputs.ref }}
+          EXPECTED_SHA: ${{ inputs.sha }}
+          KIND: ${{ inputs.kind }}
+          TAG: ${{ inputs.upstream_tag }}
         run: |
           $dll = ".\x64\Release-RTX40-MFG\OptiScaler.dll"
           if (-not (Test-Path -LiteralPath $dll)) {
@@ -80,12 +118,44 @@ jobs:
               throw "Built DLL does not embed candidate commit $short."
           }
 
-          Get-FileHash -LiteralPath $dll -Algorithm SHA256
+          switch ($env:KIND) {
+              "general" { $asset = "OptiScaler-General-$($env:TAG).zip" }
+              "tlou2"   { $asset = "OptiScaler-TLOU2-$($env:TAG).zip" }
+              "rdr2"    { $asset = "OptiScaler-RDR2-$($env:TAG).zip" }
+              default   { throw "Unexpected candidate kind: $($env:KIND)" }
+          }
 
-      - name: Upload candidate DLL
+          $packageVersion = "candidate-$($env:TAG)-$($env:KIND)"
+          .\package_release.ps1 -Version $packageVersion -EnableRtx40Mfg -SkipBuild
+
+          $source = ".\release\OptiScaler-NR-$packageVersion.zip"
+          if (-not (Test-Path -LiteralPath $source)) {
+              throw "Package script did not create $source"
+          }
+
+          $target = ".\release\$asset"
+          Move-Item -LiteralPath $source -Destination $target -Force
+
+          $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $asset" | Set-Content -LiteralPath "$target.sha256" -Encoding ascii
+
+          [ordered]@{
+              kind = $env:KIND
+              tag = $env:TAG
+              ref = $env:SOURCE_REF
+              commit = $env:EXPECTED_SHA.ToLowerInvariant()
+              asset = $asset
+              sha256 = $hash
+              configuration = "Release x64 RTX40-MFG"
+          } | ConvertTo-Json | Set-Content -LiteralPath ".\release\candidate-$($env:KIND).json" -Encoding utf8
+
+      - name: Upload verified candidate package
         uses: actions/upload-artifact@v4
         with:
-          name: OptiScaler-${{ steps.meta.outputs.safe_ref }}-${{ steps.meta.outputs.short }}
-          path: x64/Release-RTX40-MFG/OptiScaler.dll
+          name: candidate-package-${{ inputs.kind }}
+          path: |
+            release/OptiScaler-*.zip
+            release/OptiScaler-*.zip.sha256
+            release/candidate-${{ inputs.kind }}.json
           if-no-files-found: error
           retention-days: 30

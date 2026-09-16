@@ -1,9 +1,13 @@
-name: Watch upstream releases
+name: Watch upstream prereleases
 
 on:
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
+
+concurrency:
+  group: upstream-prerelease-port
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -14,8 +18,21 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       new_release: ${{ steps.port.outputs.new_release }}
+      tag: ${{ steps.port.outputs.tag }}
+      upstream_sha: ${{ steps.port.outputs.upstream_sha }}
+      release_name: ${{ steps.port.outputs.release_name }}
+      release_url: ${{ steps.port.outputs.release_url }}
       candidate_count: ${{ steps.port.outputs.candidate_count }}
       candidate_matrix: ${{ steps.port.outputs.candidate_matrix }}
+      general_status: ${{ steps.port.outputs.general_status }}
+      tlou2_status: ${{ steps.port.outputs.tlou2_status }}
+      rdr2_status: ${{ steps.port.outputs.rdr2_status }}
+      general_branch: ${{ steps.port.outputs.general_branch }}
+      tlou2_branch: ${{ steps.port.outputs.tlou2_branch }}
+      rdr2_branch: ${{ steps.port.outputs.rdr2_branch }}
+      general_sha: ${{ steps.port.outputs.general_sha }}
+      tlou2_sha: ${{ steps.port.outputs.tlou2_sha }}
+      rdr2_sha: ${{ steps.port.outputs.rdr2_sha }}
     steps:
       - name: Checkout automation branch
         uses: actions/checkout@v4
@@ -23,7 +40,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Detect upstream release and port maintained patches
+      - name: Detect upstream prerelease and port maintained patches
         id: port
         shell: bash
         env:
@@ -45,19 +62,18 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${upstream}/releases?per_page=20")
 
-          release=$(jq -c '[.[] | select(.draft == false)][0]' <<<"$release_json")
+          release=$(jq -c '[.[] | select(.draft == false and .prerelease == true)][0]' <<<"$release_json")
           if [[ -z "$release" || "$release" == "null" ]]; then
-            echo "No published upstream release was found."
-            exit 1
+            echo "No published upstream prerelease was found."
+            exit 0
           fi
 
           tag=$(jq -r '.tag_name' <<<"$release")
           release_name=$(jq -r '.name // .tag_name' <<<"$release")
           release_url=$(jq -r '.html_url' <<<"$release")
-          prerelease=$(jq -r '.prerelease' <<<"$release")
 
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]]; then
-            echo "::error::Refusing unexpected upstream release tag: $tag"
+            echo "::error::Refusing unexpected upstream prerelease tag: $tag"
             exit 1
           fi
 
@@ -70,83 +86,127 @@ jobs:
           echo "upstream_sha=$upstream_sha" >> "$GITHUB_OUTPUT"
           echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
           echo "release_url=$release_url" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
 
           if [[ "$tag" == "$baseline_tag" && "$upstream_sha" == "$baseline_commit" ]]; then
             echo "new_release=false" >> "$GITHUB_OUTPUT"
             echo "candidate_count=0" >> "$GITHUB_OUTPUT"
             echo 'candidate_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
-            echo "Upstream release $tag is already the tracked baseline."
+            echo "Upstream prerelease $tag is already the tracked baseline."
             exit 0
           fi
 
           git fetch origin '+refs/heads/*:refs/remotes/origin/*'
 
-          upstream_branch="candidate/${tag}-upstream"
-          existing_upstream=$(git ls-remote --heads origin "refs/heads/${upstream_branch}" | awk '{print $1}' | head -n1)
-
-          if [[ -n "$existing_upstream" ]]; then
-            if [[ "$existing_upstream" == "$upstream_sha" ]]; then
-              echo "new_release=false" >> "$GITHUB_OUTPUT"
-              echo "candidate_count=0" >> "$GITHUB_OUTPUT"
-              echo 'candidate_matrix={"include":[]}' >> "$GITHUB_OUTPUT"
-              echo "Candidate set for $tag already exists."
-              exit 0
-            fi
-
-            echo "::error::Candidate branch exists at $existing_upstream but upstream tag now resolves to $upstream_sha."
-            exit 1
-          fi
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git push origin "${upstream_sha}:refs/heads/${upstream_branch}"
+          upstream_branch="candidate/${tag}-upstream"
+          general_branch="candidate/${tag}-general"
+          tlou2_branch="candidate/${tag}-tlou2"
+          rdr2_branch="candidate/${tag}-rdr2"
+
+          existing_upstream=$(git ls-remote --heads origin "refs/heads/${upstream_branch}" | awk '{print $1}' | head -n1)
+          if [[ -z "$existing_upstream" ]]; then
+            git push origin "${upstream_sha}:refs/heads/${upstream_branch}"
+          elif [[ "$existing_upstream" != "$upstream_sha" ]]; then
+            echo "::error::${upstream_branch} exists at $existing_upstream but upstream tag resolves to $upstream_sha."
+            exit 1
+          fi
+
           echo "new_release=true" >> "$GITHUB_OUTPUT"
 
           general_status="conflict"
           tlou2_status="skipped"
           rdr2_status="skipped"
-          general_branch="candidate/${tag}-general"
-          tlou2_branch="candidate/${tag}-tlou2"
-          rdr2_branch="candidate/${tag}-rdr2"
+          general_sha=""
+          tlou2_sha=""
+          rdr2_sha=""
 
-          git switch --detach "$upstream_sha"
-          if git cherry-pick "$general_patch"; then
-            general_sha=$(git rev-parse HEAD)
-            git push origin "HEAD:refs/heads/${general_branch}"
+          existing_general=$(git ls-remote --heads origin "refs/heads/${general_branch}" | awk '{print $1}' | head -n1)
+          if [[ -n "$existing_general" ]]; then
+            git fetch origin "refs/heads/${general_branch}:refs/remotes/origin/${general_branch}"
+            general_parent=$(git rev-parse "${existing_general}^")
+            if [[ "$general_parent" != "$upstream_sha" ]]; then
+              echo "::error::Existing ${general_branch} does not sit directly on $upstream_sha."
+              exit 1
+            fi
+            general_sha="$existing_general"
             general_status="success"
+          else
+            git switch --detach "$upstream_sha"
+            if git cherry-pick "$general_patch"; then
+              general_sha=$(git rev-parse HEAD)
+              git push origin "HEAD:refs/heads/${general_branch}"
+              general_status="success"
+            else
+              git cherry-pick --abort || true
+            fi
+          fi
 
-            git switch --detach "$general_sha"
-            if git cherry-pick "$tlou2_patch"; then
-              git push origin "HEAD:refs/heads/${tlou2_branch}"
+          if [[ "$general_status" == "success" ]]; then
+            existing_tlou2=$(git ls-remote --heads origin "refs/heads/${tlou2_branch}" | awk '{print $1}' | head -n1)
+            if [[ -n "$existing_tlou2" ]]; then
+              git fetch origin "refs/heads/${tlou2_branch}:refs/remotes/origin/${tlou2_branch}"
+              tlou2_parent=$(git rev-parse "${existing_tlou2}^")
+              if [[ "$tlou2_parent" != "$general_sha" ]]; then
+                echo "::error::Existing ${tlou2_branch} does not sit directly on $general_sha."
+                exit 1
+              fi
+              tlou2_sha="$existing_tlou2"
               tlou2_status="success"
             else
-              git cherry-pick --abort || true
-              tlou2_status="conflict"
+              git switch --detach "$general_sha"
+              if git cherry-pick "$tlou2_patch"; then
+                tlou2_sha=$(git rev-parse HEAD)
+                git push origin "HEAD:refs/heads/${tlou2_branch}"
+                tlou2_status="success"
+              else
+                git cherry-pick --abort || true
+                tlou2_status="conflict"
+              fi
             fi
 
-            git switch --detach "$general_sha"
-            if git cherry-pick "$rdr2_patch"; then
-              git push origin "HEAD:refs/heads/${rdr2_branch}"
+            existing_rdr2=$(git ls-remote --heads origin "refs/heads/${rdr2_branch}" | awk '{print $1}' | head -n1)
+            if [[ -n "$existing_rdr2" ]]; then
+              git fetch origin "refs/heads/${rdr2_branch}:refs/remotes/origin/${rdr2_branch}"
+              rdr2_parent=$(git rev-parse "${existing_rdr2}^")
+              if [[ "$rdr2_parent" != "$general_sha" ]]; then
+                echo "::error::Existing ${rdr2_branch} does not sit directly on $general_sha."
+                exit 1
+              fi
+              rdr2_sha="$existing_rdr2"
               rdr2_status="success"
             else
-              git cherry-pick --abort || true
-              rdr2_status="conflict"
+              git switch --detach "$general_sha"
+              if git cherry-pick "$rdr2_patch"; then
+                rdr2_sha=$(git rev-parse HEAD)
+                git push origin "HEAD:refs/heads/${rdr2_branch}"
+                rdr2_status="success"
+              else
+                git cherry-pick --abort || true
+                rdr2_status="conflict"
+              fi
             fi
-          else
-            git cherry-pick --abort || true
           fi
 
           candidates='[]'
           if [[ "$general_status" == "success" ]]; then
-            candidates=$(jq -c --arg ref "$general_branch" '. + [{"ref":$ref,"kind":"general"}]' <<<"$candidates")
+            candidates=$(jq -c \
+              --arg ref "$general_branch" \
+              --arg sha "$general_sha" \
+              '. + [{"ref":$ref,"sha":$sha,"kind":"general"}]' <<<"$candidates")
           fi
           if [[ "$tlou2_status" == "success" ]]; then
-            candidates=$(jq -c --arg ref "$tlou2_branch" '. + [{"ref":$ref,"kind":"tlou2"}]' <<<"$candidates")
+            candidates=$(jq -c \
+              --arg ref "$tlou2_branch" \
+              --arg sha "$tlou2_sha" \
+              '. + [{"ref":$ref,"sha":$sha,"kind":"tlou2"}]' <<<"$candidates")
           fi
           if [[ "$rdr2_status" == "success" ]]; then
-            candidates=$(jq -c --arg ref "$rdr2_branch" '. + [{"ref":$ref,"kind":"rdr2"}]' <<<"$candidates")
+            candidates=$(jq -c \
+              --arg ref "$rdr2_branch" \
+              --arg sha "$rdr2_sha" \
+              '. + [{"ref":$ref,"sha":$sha,"kind":"rdr2"}]' <<<"$candidates")
           fi
 
           candidate_count=$(jq 'length' <<<"$candidates")
@@ -158,10 +218,13 @@ jobs:
           echo "general_branch=$general_branch" >> "$GITHUB_OUTPUT"
           echo "tlou2_branch=$tlou2_branch" >> "$GITHUB_OUTPUT"
           echo "rdr2_branch=$rdr2_branch" >> "$GITHUB_OUTPUT"
+          echo "general_sha=$general_sha" >> "$GITHUB_OUTPUT"
+          echo "tlou2_sha=$tlou2_sha" >> "$GITHUB_OUTPUT"
+          echo "rdr2_sha=$rdr2_sha" >> "$GITHUB_OUTPUT"
           echo "candidate_count=$candidate_count" >> "$GITHUB_OUTPUT"
           echo "candidate_matrix=$candidate_matrix" >> "$GITHUB_OUTPUT"
 
-      - name: Create upstream candidate tracking issue
+      - name: Create upstream prerelease tracking issue
         if: steps.port.outputs.new_release == 'true'
         uses: actions/github-script@v7
         env:
@@ -169,7 +232,6 @@ jobs:
           UPSTREAM_SHA: ${{ steps.port.outputs.upstream_sha }}
           RELEASE_NAME: ${{ steps.port.outputs.release_name }}
           RELEASE_URL: ${{ steps.port.outputs.release_url }}
-          PRERELEASE: ${{ steps.port.outputs.prerelease }}
           GENERAL_STATUS: ${{ steps.port.outputs.general_status }}
           TLOU2_STATUS: ${{ steps.port.outputs.tlou2_status }}
           RDR2_STATUS: ${{ steps.port.outputs.rdr2_status }}
@@ -178,7 +240,7 @@ jobs:
           RDR2_BRANCH: ${{ steps.port.outputs.rdr2_branch }}
         with:
           script: |
-            const title = `Upstream ${process.env.TAG} candidate port`;
+            const title = `Upstream ${process.env.TAG} prerelease port`;
             const {data: openIssues} = await github.rest.issues.listForRepo({
               ...context.repo,
               state: 'open',
@@ -194,20 +256,18 @@ jobs:
               `- ${label}: **${status}**${status === 'success' ? ` - \`${branch}\`` : ''}`;
 
             const body = [
-              `Detected upstream release [${process.env.RELEASE_NAME}](${process.env.RELEASE_URL}).`,
+              `Detected upstream prerelease [${process.env.RELEASE_NAME}](${process.env.RELEASE_URL}).`,
               '',
               `- Upstream tag: \`${process.env.TAG}\``,
               `- Upstream commit: \`${process.env.UPSTREAM_SHA}\``,
-              `- Upstream prerelease: \`${process.env.PRERELEASE}\``,
               '',
               'Automatic patch-port result:',
               branchLine('General', process.env.GENERAL_BRANCH, process.env.GENERAL_STATUS),
               branchLine('TLOU2 / Akane', process.env.TLOU2_BRANCH, process.env.TLOU2_STATUS),
               branchLine('RDR2 / PureDark', process.env.RDR2_BRANCH, process.env.RDR2_STATUS),
               '',
-              'Successful candidate branches are built by this workflow. Download their Actions artifacts and test them in-game.',
-              '',
-              'Do not replace the known-good maintained branches until validation is complete. After validation, run **Publish validated upstream candidate** with this upstream tag and confirmation `PUBLISH`.',
+              'If all three ports build and pass provenance checks, this workflow automatically publishes three separate GitHub prereleases.',
+              'If any port or build fails, no automatic prereleases are published and the known-good branches remain unchanged.',
             ].join('\n');
 
             await github.rest.issues.create({
@@ -225,3 +285,219 @@ jobs:
     uses: ./.github/workflows/build-upstream-candidate.yml
     with:
       ref: ${{ matrix.ref }}
+      sha: ${{ matrix.sha }}
+      kind: ${{ matrix.kind }}
+      upstream_tag: ${{ needs.prepare-candidates.outputs.tag }}
+
+  auto-publish-prereleases:
+    needs: [prepare-candidates, build-candidates]
+    if: needs.prepare-candidates.outputs.new_release == 'true' && needs.prepare-candidates.outputs.candidate_count == '3'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Download verified candidate packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: candidate-package-*
+          path: packages
+          merge-multiple: true
+
+      - name: Publish three prereleases and advance manifest
+        uses: actions/github-script@v7
+        env:
+          UPSTREAM_TAG: ${{ needs.prepare-candidates.outputs.tag }}
+          UPSTREAM_SHA: ${{ needs.prepare-candidates.outputs.upstream_sha }}
+          UPSTREAM_RELEASE_URL: ${{ needs.prepare-candidates.outputs.release_url }}
+          GENERAL_SHA: ${{ needs.prepare-candidates.outputs.general_sha }}
+          TLOU2_SHA: ${{ needs.prepare-candidates.outputs.tlou2_sha }}
+          RDR2_SHA: ${{ needs.prepare-candidates.outputs.rdr2_sha }}
+        with:
+          script: |
+            const fs = require('fs');
+            const crypto = require('crypto');
+
+            const tag = process.env.UPSTREAM_TAG;
+            const variants = [
+              {
+                kind: 'general',
+                label: 'General',
+                sha: process.env.GENERAL_SHA,
+                asset: `OptiScaler-General-${tag}.zip`,
+                releaseTag: `mods-${tag}-general`,
+                releaseName: `OptiScaler General - ${tag}`,
+              },
+              {
+                kind: 'tlou2',
+                label: 'TLOU2 / Akane',
+                sha: process.env.TLOU2_SHA,
+                asset: `OptiScaler-TLOU2-${tag}.zip`,
+                releaseTag: `mods-${tag}-tlou2`,
+                releaseName: `OptiScaler TLOU2 / Akane - ${tag}`,
+              },
+              {
+                kind: 'rdr2',
+                label: 'RDR2 / PureDark',
+                sha: process.env.RDR2_SHA,
+                asset: `OptiScaler-RDR2-${tag}.zip`,
+                releaseTag: `mods-${tag}-rdr2`,
+                releaseName: `OptiScaler RDR2 / PureDark - ${tag}`,
+              },
+            ];
+
+            for (const variant of variants) {
+              if (!/^[0-9a-f]{40}$/.test(variant.sha)) {
+                throw new Error(`Invalid ${variant.kind} candidate SHA: ${variant.sha}`);
+              }
+
+              const zipPath = `packages/${variant.asset}`;
+              const checksumPath = `${zipPath}.sha256`;
+              const metadataPath = `packages/candidate-${variant.kind}.json`;
+
+              if (!fs.existsSync(zipPath) || !fs.existsSync(checksumPath) || !fs.existsSync(metadataPath)) {
+                throw new Error(`Missing verified package files for ${variant.kind}`);
+              }
+
+              const bytes = fs.readFileSync(zipPath);
+              const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+              const checksum = fs.readFileSync(checksumPath, 'utf8').trim().split(/\s+/)[0].toLowerCase();
+              const metadata = JSON.parse(fs.readFileSync(metadataPath, 'utf8').replace(/^\uFEFF/, ''));
+
+              if (hash !== checksum) {
+                throw new Error(`ZIP checksum mismatch for ${variant.asset}`);
+              }
+
+              if (
+                metadata.kind !== variant.kind ||
+                metadata.tag !== tag ||
+                metadata.commit !== variant.sha ||
+                metadata.asset !== variant.asset ||
+                metadata.sha256 !== hash
+              ) {
+                throw new Error(`Candidate metadata mismatch for ${variant.kind}`);
+              }
+            }
+
+            const allReleases = await github.paginate(github.rest.repos.listReleases, {
+              ...context.repo,
+              per_page: 100,
+            });
+
+            const prepared = [];
+
+            for (const variant of variants) {
+              const existing = allReleases.find(release => release.tag_name === variant.releaseTag);
+
+              if (existing && !existing.draft) {
+                if (!existing.prerelease || existing.target_commitish !== variant.sha) {
+                  throw new Error(`Existing release ${variant.releaseTag} does not match the expected automated prerelease.`);
+                }
+                core.info(`Release ${variant.releaseTag} already exists and matches; leaving it in place.`);
+                prepared.push({release: existing, variant, alreadyPublished: true});
+                continue;
+              }
+
+              let release = existing;
+              const bodyLines = [
+                `# ${variant.releaseName}`,
+                '',
+                `Automated port of upstream prerelease ${tag}.`,
+                `Upstream release: ${process.env.UPSTREAM_RELEASE_URL}`,
+                `Upstream commit: \`${process.env.UPSTREAM_SHA}\``,
+                `Variant commit: \`${variant.sha}\``,
+                '',
+                'The port applied cleanly and the Release x64 RTX40-MFG build passed embedded-commit provenance verification.',
+                'This is an automated prerelease; successful compilation is not an in-game compatibility guarantee.',
+              ];
+
+              if (variant.kind === 'rdr2') {
+                bodyLines.push('');
+                bodyLines.push('RDR2 / PureDark keeps PureDark ownership of presentation, Streamline, Reflex and frame generation. It does not use the rejected generic `[FrameGen] External=true` path.');
+              }
+
+              const body = bodyLines.join('\n');
+
+              if (!release) {
+                release = (await github.rest.repos.createRelease({
+                  ...context.repo,
+                  tag_name: variant.releaseTag,
+                  name: variant.releaseName,
+                  body,
+                  draft: true,
+                  prerelease: true,
+                  target_commitish: variant.sha,
+                })).data;
+              } else {
+                release = (await github.rest.repos.updateRelease({
+                  ...context.repo,
+                  release_id: release.id,
+                  name: variant.releaseName,
+                  body,
+                  draft: true,
+                  prerelease: true,
+                  target_commitish: variant.sha,
+                })).data;
+
+                for (const asset of release.assets) {
+                  await github.rest.repos.deleteReleaseAsset({
+                    ...context.repo,
+                    asset_id: asset.id,
+                  });
+                }
+              }
+
+              const files = [
+                variant.asset,
+                `${variant.asset}.sha256`,
+                `candidate-${variant.kind}.json`,
+              ];
+
+              for (const file of files) {
+                await github.rest.repos.uploadReleaseAsset({
+                  ...context.repo,
+                  release_id: release.id,
+                  name: file,
+                  data: fs.readFileSync(`packages/${file}`),
+                });
+              }
+
+              prepared.push({release, variant, alreadyPublished: false});
+            }
+
+            for (const item of prepared) {
+              if (item.alreadyPublished) {
+                continue;
+              }
+
+              await github.rest.repos.updateRelease({
+                ...context.repo,
+                release_id: item.release.id,
+                draft: false,
+                prerelease: true,
+              });
+            }
+
+            const current = await github.rest.repos.getContent({
+              ...context.repo,
+              path: '.github/upstream-port-manifest.json',
+              ref: 'main',
+            });
+
+            const nextManifest = {
+              upstream_repository: 'wilsjo2/OptiScaler-DLSSNR-PreSR-Multipass',
+              baseline_tag: tag,
+              baseline_commit: process.env.UPSTREAM_SHA,
+              general_patch_commit: process.env.GENERAL_SHA,
+              tlou2_patch_commit: process.env.TLOU2_SHA,
+              rdr2_patch_commit: process.env.RDR2_SHA,
+            };
+
+            await github.rest.repos.createOrUpdateFileContents({
+              ...context.repo,
+              path: '.github/upstream-port-manifest.json',
+              branch: 'main',
+              message: `automation: advance upstream port baseline to ${tag}`,
+              sha: current.data.sha,
+              content: Buffer.from(JSON.stringify(nextManifest, null, 2) + '\n').toString('base64'),
+            });
