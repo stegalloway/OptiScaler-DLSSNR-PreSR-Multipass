@@ -1304,6 +1304,13 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForComposition(IDXGIFactory2* realFacto
     // Always call the trampoline, including pass-through/error cases. Calling the detoured virtual
     // method here re-enters this hook. Keep the composition descriptor intact: notably, a desktop
     // VSync override must not turn its FLIP_SEQUENTIAL swap effect into FLIP_DISCARD.
+    //
+    // 720x1000 is the exact size of TLOU2's "Akane" DirectComposition helper surface as observed on
+    // the game build current at the time this was written (2026-09). It is not a documented constant
+    // from the game or from OptiScaler -- if a future TLOU2 patch resizes that surface, this stops
+    // matching silently (Akane composition falls through to the normal intercept path instead of
+    // pass-through) with no error or log line pointing at why. If Akane breaks again after a game
+    // update, check this size first before assuming the bug is elsewhere.
     const bool akaneComposition = pDesc != nullptr && pDesc->Width == 720 && pDesc->Height == 1000 &&
                                   _wcsicmp(Util::ExePath().filename().c_str(), L"tlou-ii.exe") == 0;
 
