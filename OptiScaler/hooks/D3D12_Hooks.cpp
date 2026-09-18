@@ -2,6 +2,7 @@
 #include "D3D12_Hooks.h"
 #include "Rdr2PureDark.h"
 #include <dlssnr/DlssNr_ExposureScan.h>
+#include <shaders/dlssnr/DlssNr_Rdr2Epoch.h>
 
 #include <Util.h>
 #include <Config.h>
@@ -67,6 +68,7 @@ static LUID _lastAdapterLuid = {};
 
 // Common
 using PFN_ResourceBarrier = rewrite_signature<decltype(&ID3D12GraphicsCommandList::ResourceBarrier)>::type;
+using PFN_Reset = rewrite_signature<decltype(&ID3D12GraphicsCommandList::Reset)>::type;
 using PFN_SetDescriptorHeaps = rewrite_signature<decltype(&ID3D12GraphicsCommandList::SetDescriptorHeaps)>::type;
 using PFN_SetPipelineState = rewrite_signature<decltype(&ID3D12GraphicsCommandList::SetPipelineState)>::type;
 
@@ -211,6 +213,12 @@ static ankerl::unordered_dense::map<ID3D12RootSignature*, UINT> rootSigParameter
 
 static bool isUpscalerActive = false;
 static PFN_ResourceBarrier o_ResourceBarrier = nullptr;
+
+// RDR2/PureDark coexistence only (see Rdr2PureDark.h). Installed once for the lifetime of the
+// process, independent of DlssNrEnabled -- NR can be toggled at runtime, but this hook install
+// point cannot re-run, so gating it on a config value that can change later would silently leave
+// generation tracking absent for the rest of the session if NR were enabled after this point.
+static PFN_Reset o_Reset = nullptr;
 
 // Intel Atomic Extension
 struct UE_D3D12_RESOURCE_DESC
@@ -402,6 +410,17 @@ static void hkResourceBarrier(ID3D12GraphicsCommandList* commandList, UINT NumBa
         DlssNr::ExposureScan::NoteBarriers(commandList, NumBarriers, pBarriers);
 
     o_ResourceBarrier(commandList, NumBarriers, pBarriers);
+}
+
+VALIDATE_HOOK(hkReset, PFN_Reset)
+static HRESULT hkReset(ID3D12GraphicsCommandList* commandList, ID3D12CommandAllocator* pAllocator,
+                       ID3D12PipelineState* pInitialState)
+{
+    // Always call the trampoline first: NoteRdr2CommandListReset only means anything once the
+    // real Reset() has told us whether a new recording lifetime actually started.
+    const HRESULT result = o_Reset(commandList, pAllocator, pInitialState);
+    DlssNr::NoteRdr2CommandListReset(static_cast<ID3D12CommandList*>(commandList), SUCCEEDED(result));
+    return result;
 }
 
 VALIDATE_HOOK(hkSetDescriptorHeaps, PFN_SetDescriptorHeaps)
@@ -1234,6 +1253,9 @@ static void HookToCommandList(ID3D12Device* InDevice)
             s_SetPipelineState.o_earlyHook = (PFN_SetPipelineState) pVTable[25];
             if (Config::Instance()->DlssNrEnabled.value_or_default())
                 o_ResourceBarrier = (PFN_ResourceBarrier) pVTable[26];
+            // RDR2-only, independent of DlssNrEnabled -- see the comment on o_Reset above.
+            if (IsRdr2PureDarkCoexistence())
+                o_Reset = (PFN_Reset) pVTable[10];
             s_SetDescriptorHeaps.o_earlyHook = (PFN_SetDescriptorHeaps) pVTable[28];
             s_SetComputeRootSignature.o_earlyHook = (PFN_SetComputeRootSignature) pVTable[29];
             s_SetGraphicsRootSignature.o_earlyHook = (PFN_SetGraphicsRootSignature) pVTable[30];
@@ -1244,7 +1266,7 @@ static void HookToCommandList(ID3D12Device* InDevice)
             s_SetComputeRootShaderResourceView.o_earlyHook = (PFN_SetComputeRootShaderResourceView) pVTable[39];
             s_SetComputeRootUnorderedAccessView.o_earlyHook = (PFN_SetComputeRootUnorderedAccessView) pVTable[41];
 
-            if (o_ResourceBarrier || s_SetPipelineState.o_earlyHook || s_SetDescriptorHeaps.o_earlyHook ||
+            if (o_ResourceBarrier || o_Reset || s_SetPipelineState.o_earlyHook || s_SetDescriptorHeaps.o_earlyHook ||
                 s_SetComputeRootSignature.o_earlyHook || s_SetGraphicsRootSignature.o_earlyHook ||
                 s_SetComputeRootDescriptorTable.o_earlyHook || s_SetComputeRoot32BitConstant.o_earlyHook ||
                 s_SetComputeRoot32BitConstants.o_earlyHook || s_SetComputeRootConstantBufferView.o_earlyHook ||
@@ -1255,6 +1277,9 @@ static void HookToCommandList(ID3D12Device* InDevice)
 
                 if (o_ResourceBarrier != nullptr)
                     DetourAttach(&(PVOID&) o_ResourceBarrier, hkResourceBarrier);
+
+                if (o_Reset != nullptr)
+                    DetourAttach(&(PVOID&) o_Reset, hkReset);
 
                 if (s_SetPipelineState.o_earlyHook != nullptr && extendedRestoreSignature)
                     DetourAttach(&(PVOID&) s_SetPipelineState.o_earlyHook, hkSetPipelineState);
@@ -1303,6 +1328,7 @@ static void HookToCommandList(ID3D12Device* InDevice)
                 else
                 {
                     o_ResourceBarrier = nullptr;
+                    o_Reset = nullptr;
                     s_SetPipelineState.o_earlyHook = nullptr;
                     s_SetDescriptorHeaps.o_earlyHook = nullptr;
                     s_SetComputeRootSignature.o_earlyHook = nullptr;
@@ -1340,6 +1366,12 @@ static void UnhookAll()
     {
         DetourDetach(&(PVOID&) o_ResourceBarrier, hkResourceBarrier);
         o_ResourceBarrier = nullptr;
+    }
+
+    if (o_Reset != nullptr)
+    {
+        DetourDetach(&(PVOID&) o_Reset, hkReset);
+        o_Reset = nullptr;
     }
 
     if (s_SetComputeRootSignature.o_earlyHook != nullptr)

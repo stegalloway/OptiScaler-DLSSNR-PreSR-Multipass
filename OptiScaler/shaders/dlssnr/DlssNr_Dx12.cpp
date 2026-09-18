@@ -56,12 +56,74 @@ namespace
 // cannot prove when NR feature-creation work reached the GPU. Track only the
 // native DX12 command lists handed to the NR schedule and advance after that
 // exact list is observed at ResTrack's existing post-ExecuteCommandLists seam.
+//
+// Matching by raw ID3D12CommandList* alone is not enough: D3D12 command lists get Reset() and
+// reused constantly by the engine, so a registration that's discarded without ever reaching the
+// tracked ExecuteCommandLists path (an aborted frame, an early-out, a PureDark code path this
+// hook doesn't see) could otherwise be mistaken for a later, unrelated recording on that same
+// pointer. D3D12_Hooks.cpp installs a Reset() hook for RDR2/PureDark coexistence only, for the
+// process lifetime (see Rdr2PureDark.h / o_Reset there), and calls NoteRdr2CommandListReset()
+// below on every successful Reset() of any command list. Each successful Reset() bumps that
+// pointer's generation and -- since a successful Reset() proves the previous recording lifetime
+// ended -- immediately expires any pending NR registration still outstanding for it. A
+// registration only counts as matched if the generation recorded at registration time still
+// equals the pointer's current generation when ExecuteCommandLists is observed.
+//
+// This does not fully close the identity gap: if the underlying COM object is destroyed and a
+// new, unrelated command list object is allocated at the exact same address before its first
+// Reset(), the generation map would still hold the old object's generation. Closing that would
+// need a process-wide Release() hook -- a materially bigger, riskier change for a narrower edge
+// case than the Reset-and-reuse pattern real D3D12 engines actually rely on, so it isn't
+// attempted here.
 std::mutex rdr2NrSubmissionMutex;
-std::set<ID3D12CommandList*> rdr2NrPendingSubmissionLists;
+ankerl::unordered_dense::map<ID3D12CommandList*, unsigned long long> rdr2NrListGeneration;
+
+struct Rdr2NrPending
+{
+    unsigned long long generation = 0;
+    unsigned long long epoch = 0;
+};
+ankerl::unordered_dense::map<ID3D12CommandList*, Rdr2NrPending> rdr2NrPendingSubmissions;
+
 std::atomic<unsigned long long> rdr2NrSubmissionEpoch { 0 };
 std::atomic_bool rdr2NrEpochAnnounced { false };
 
+// Emergency guard only -- not a normal-path mechanism now that Reset() is generation-tracked.
+// If this ever fires, some command list is accumulating pending registrations without ever being
+// Reset() or observed as submitted, which points at another lifecycle hole, not expected cleanup.
+constexpr size_t kRdr2NrPendingCap = 256;
+
 bool IsRdr2PureDarkNrClock() { return IsRdr2PureDarkCoexistence(); }
+
+unsigned long long Rdr2NrCurrentGeneration(ID3D12CommandList* commandList)
+{
+    const auto it = rdr2NrListGeneration.find(commandList);
+    return it != rdr2NrListGeneration.end() ? it->second : 0;
+}
+
+void RegisterRdr2NrSubmission(ID3D12CommandList* commandList, unsigned long long submissionEpoch)
+{
+    std::lock_guard<std::mutex> lock(rdr2NrSubmissionMutex);
+
+    if (rdr2NrPendingSubmissions.size() >= kRdr2NrPendingCap)
+    {
+        static bool warnedOnce = false;
+        if (!warnedOnce)
+        {
+            warnedOnce = true;
+            LOG_WARN("RDR2 PureDark coexistence: {} NR command lists are pending without being "
+                     "Reset() or submitted; clearing. Reset()-based expiry isn't catching "
+                     "everything here -- worth investigating as its own issue.",
+                     kRdr2NrPendingCap);
+        }
+        rdr2NrPendingSubmissions.clear();
+    }
+
+    const auto generation = Rdr2NrCurrentGeneration(commandList);
+    rdr2NrPendingSubmissions.insert_or_assign(commandList, Rdr2NrPending { generation, submissionEpoch });
+
+    LOG_DEBUG("RDR2 NR epoch: register list={} gen={} epoch={}", (void*) commandList, generation, submissionEpoch);
+}
 
 void Rdr2NrSubmitted(UINT count, ID3D12CommandList* const* lists)
 {
@@ -73,11 +135,29 @@ void Rdr2NrSubmitted(UINT count, ID3D12CommandList* const* lists)
         std::lock_guard<std::mutex> lock(rdr2NrSubmissionMutex);
         for (UINT i = 0; i < count; ++i)
         {
-            const auto it = rdr2NrPendingSubmissionLists.find(lists[i]);
-            if (it != rdr2NrPendingSubmissionLists.end())
+            const auto pending = rdr2NrPendingSubmissions.find(lists[i]);
+            if (pending == rdr2NrPendingSubmissions.end())
+                continue;
+
+            const auto currentGeneration = Rdr2NrCurrentGeneration(lists[i]);
+
+            if (pending->second.generation == currentGeneration)
             {
-                rdr2NrPendingSubmissionLists.erase(it);
+                LOG_DEBUG("RDR2 NR epoch: submit list={} gen={} epoch={}", (void*) lists[i], pending->second.generation,
+                          pending->second.epoch);
+                rdr2NrPendingSubmissions.erase(pending);
                 submittedTrackedList = true;
+            }
+            else
+            {
+                // NoteRdr2CommandListReset should already have expired this at the Reset() that
+                // invalidated it; reaching here means that expiry and this match raced. Either
+                // way, a mismatched generation means this submission isn't the one that was
+                // registered, so it must not advance the epoch counter.
+                LOG_WARN("RDR2 NR epoch: stale submission list={} registeredGen={} currentGen={} "
+                         "epoch={}",
+                         (void*) lists[i], pending->second.generation, currentGeneration, pending->second.epoch);
+                rdr2NrPendingSubmissions.erase(pending);
             }
         }
     }
@@ -93,7 +173,8 @@ void Rdr2NrSubmitted(UINT count, ID3D12CommandList* const* lists)
 void ResetRdr2NrEpoch()
 {
     std::lock_guard<std::mutex> lock(rdr2NrSubmissionMutex);
-    rdr2NrPendingSubmissionLists.clear();
+    rdr2NrPendingSubmissions.clear();
+    rdr2NrListGeneration.clear();
     rdr2NrSubmissionEpoch.store(0, std::memory_order_release);
     rdr2NrEpochAnnounced.store(false, std::memory_order_release);
 }
@@ -728,15 +809,37 @@ unsigned long long SubmissionEpoch_Dx12(ID3D12GraphicsCommandList* commandList)
         return State::Instance().frameCount;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(rdr2NrSubmissionMutex);
-        rdr2NrPendingSubmissionLists.insert(static_cast<ID3D12CommandList*>(commandList));
-    }
+    const auto submissionEpoch = rdr2NrSubmissionEpoch.load(std::memory_order_acquire);
+    RegisterRdr2NrSubmission(static_cast<ID3D12CommandList*>(commandList), submissionEpoch);
 
     if (!rdr2NrEpochAnnounced.exchange(true, std::memory_order_acq_rel))
         LOG_INFO("RDR2 PureDark coexistence: NR uses private submitted-command-list epoch");
 
-    return rdr2NrSubmissionEpoch.load(std::memory_order_acquire);
+    return submissionEpoch;
+}
+
+void NoteRdr2CommandListReset(ID3D12CommandList* commandList, bool succeeded)
+{
+    // Hook install is gated on RDR2/PureDark coexistence only (see D3D12_Hooks.cpp), not on
+    // DlssNrEnabled -- NR can be toggled at runtime after the hook is already installed, so this
+    // still runs even while NR is off. It only touches the generation/pending maps, so that's
+    // cheap and harmless when NR is disabled.
+    if (!IsRdr2PureDarkNrClock() || commandList == nullptr || !succeeded)
+        return;
+
+    std::lock_guard<std::mutex> lock(rdr2NrSubmissionMutex);
+
+    const auto genIt = rdr2NrListGeneration.find(commandList);
+    const unsigned long long newGeneration = (genIt != rdr2NrListGeneration.end() ? genIt->second : 0) + 1;
+    rdr2NrListGeneration.insert_or_assign(commandList, newGeneration);
+
+    const auto pending = rdr2NrPendingSubmissions.find(commandList);
+    if (pending != rdr2NrPendingSubmissions.end())
+    {
+        LOG_DEBUG("RDR2 NR epoch: expire list={} registeredGen={} newGen={} epoch={}", (void*) commandList,
+                  pending->second.generation, newGeneration, pending->second.epoch);
+        rdr2NrPendingSubmissions.erase(pending);
+    }
 }
 
 void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
