@@ -36,16 +36,12 @@ static bool IsSL1AndFGActive()
     return state.streamlineVersion.major == 1 && state.activeFgInput == FGInput::DLSSG;
 }
 
-static bool IsRdr2PureDark()
-{
-    return IsRdr2PureDarkCoexistence();
-}
+static bool IsRdr2PureDark() { return IsRdr2PureDarkCoexistence(); }
 
 static bool IsRdr2PureDarkMfg()
 {
 #if defined(OPTISCALER_RTX40_MFG)
-    return IsRdr2PureDark() &&
-           Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default();
+    return IsRdr2PureDark() && Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default();
 #else
     return false;
 #endif
@@ -1176,8 +1172,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     LOG_TRACE("DLSSG Modified Mode: {}", magic_enum::enum_name(newOptions.mode));
 
     const bool rdr2PureDarkMfgBridge = IsRdr2PureDarkMfg();
-    const bool streamlineSupportsMfg =
-        state.streamlineVersion >= feature_version { 2, 7, 1 };
+    const bool streamlineSupportsMfg = state.streamlineVersion >= feature_version { 2, 7, 1 };
 
     if (dlssgPotentiallyActive && (streamlineSupportsMfg || rdr2PureDarkMfgBridge))
     {
@@ -1188,8 +1183,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
             {
                 loggedRdr2VersionBypass = true;
                 LOG_INFO("RDR2 PureDark MFG coexistence: bypassing stale Streamline {}.{}.{} version gate",
-                         state.streamlineVersion.major, state.streamlineVersion.minor,
-                         state.streamlineVersion.patch);
+                         state.streamlineVersion.major, state.streamlineVersion.minor, state.streamlineVersion.patch);
             }
         }
 #if defined(OPTISCALER_RTX40_MFG)
@@ -1484,16 +1478,14 @@ void* StreamlineHooks::hkdlssg_slGetPluginFunction(const char* functionName)
     {
         if (strcmp(functionName, "slDLSSGSetOptions") == 0)
         {
-            o_slDLSSGSetOptions =
-                (decltype(&slDLSSGSetOptions)) o_dlssg_slGetPluginFunction(functionName);
+            o_slDLSSGSetOptions = (decltype(&slDLSSGSetOptions)) o_dlssg_slGetPluginFunction(functionName);
             LOG_INFO("RDR2 PureDark MFG coexistence: intercepting slDLSSGSetOptions only");
             return o_slDLSSGSetOptions ? &hkslDLSSGSetOptions : nullptr;
         }
 
         if (strcmp(functionName, "slDLSSGGetState") == 0)
         {
-            o_slDLSSGGetState =
-                (decltype(&slDLSSGGetState)) o_dlssg_slGetPluginFunction(functionName);
+            o_slDLSSGGetState = (decltype(&slDLSSGGetState)) o_dlssg_slGetPluginFunction(functionName);
             LOG_INFO("RDR2 PureDark MFG coexistence: intercepting slDLSSGGetState only");
             return o_slDLSSGGetState ? &hkslDLSSGGetState : nullptr;
         }

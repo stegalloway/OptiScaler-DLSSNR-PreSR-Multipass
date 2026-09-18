@@ -113,13 +113,15 @@ static PFN_DrawInstanced o_DrawInstanced = nullptr;
 static PFN_DrawIndexedInstanced o_DrawIndexedInstanced = nullptr;
 static PFN_ExecuteBundle o_ExecuteBundle = nullptr;
 static PFN_Close o_Close = nullptr;
-using PFN_LateReset = HRESULT(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12CommandAllocator*, ID3D12PipelineState*);
+using PFN_LateReset = HRESULT(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, ID3D12CommandAllocator*,
+                                                  ID3D12PipelineState*);
 static PFN_LateReset o_LateReset = nullptr;
 static HRESULT STDMETHODCALLTYPE hkLateReset(ID3D12GraphicsCommandList* cmd, ID3D12CommandAllocator* allocator,
                                              ID3D12PipelineState* pipeline)
 {
     const auto result = o_LateReset(cmd, allocator, pipeline);
-    if (SUCCEEDED(result)) DlssNr::FinishedPictureResetCommandList(cmd);
+    if (SUCCEEDED(result))
+        DlssNr::FinishedPictureResetCommandList(cmd);
     return result;
 }
 
@@ -1895,7 +1897,7 @@ void ResTrack_Dx12::HookLateNrQueue(ID3D12Device* device)
     if (IsRdr2PureDarkCoexistence())
     {
         ID3D12Device* realDevice = nullptr;
-        if (CheckForRealObject("RDR2 PureDark late-NR device", device, (IUnknown**)&realDevice) &&
+        if (CheckForRealObject("RDR2 PureDark late-NR device", device, (IUnknown**) &realDevice) &&
             realDevice != nullptr)
         {
             trackingDevice = realDevice;
@@ -1908,7 +1910,8 @@ void ResTrack_Dx12::HookLateNrQueue(ID3D12Device* device)
     }
 
     HookToQueue(trackingDevice);
-    if (o_LateReset) return;
+    if (o_LateReset)
+        return;
 
     ID3D12CommandAllocator* allocator = nullptr;
     ID3D12GraphicsCommandList* cmd = nullptr;
@@ -1918,12 +1921,14 @@ void ResTrack_Dx12::HookLateNrQueue(ID3D12Device* device)
                                                         IID_PPV_ARGS(&cmd))))
         {
             ID3D12GraphicsCommandList* real = nullptr;
-            if (!CheckForRealObject(__FUNCTION__, cmd, (IUnknown**)&real)) real = cmd;
-            o_LateReset = (PFN_LateReset)(*(void***)real)[10];
+            if (!CheckForRealObject(__FUNCTION__, cmd, (IUnknown**) &real))
+                real = cmd;
+            o_LateReset = (PFN_LateReset) (*(void***) real)[10];
             DetourTransactionBegin();
             DetourUpdateThread(GetCurrentThread());
-            DetourAttach(&(PVOID&)o_LateReset, hkLateReset);
-            if (DetourTransactionCommit() != NO_ERROR) o_LateReset = nullptr;
+            DetourAttach(&(PVOID&) o_LateReset, hkLateReset);
+            if (DetourTransactionCommit() != NO_ERROR)
+                o_LateReset = nullptr;
             cmd->Close();
             cmd->Release();
         }
