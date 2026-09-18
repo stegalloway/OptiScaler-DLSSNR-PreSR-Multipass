@@ -88,6 +88,13 @@ ankerl::unordered_dense::map<ID3D12CommandList*, Rdr2NrPending> rdr2NrPendingSub
 std::atomic<unsigned long long> rdr2NrSubmissionEpoch { 0 };
 std::atomic_bool rdr2NrEpochAnnounced { false };
 
+// Separate identity for ExposureScan::Tick()'s per-frame dedup -- see ScanTickEpoch_Dx12() below and
+// the comment on it in DlssNr_Rdr2Epoch.h. Guarded by rdr2NrSubmissionMutex, same as the generation map
+// it reads.
+ID3D12CommandList* rdr2NrLastScanTickList = nullptr;
+unsigned long long rdr2NrLastScanTickGeneration = 0;
+std::atomic<unsigned long long> rdr2NrScanTickEpoch { 0 };
+
 // Emergency guard only -- not a normal-path mechanism now that Reset() is generation-tracked.
 // If this ever fires, some command list is accumulating pending registrations without ever being
 // Reset() or observed as submitted, which points at another lifecycle hole, not expected cleanup.
@@ -177,6 +184,9 @@ void ResetRdr2NrEpoch()
     rdr2NrListGeneration.clear();
     rdr2NrSubmissionEpoch.store(0, std::memory_order_release);
     rdr2NrEpochAnnounced.store(false, std::memory_order_release);
+    rdr2NrLastScanTickList = nullptr;
+    rdr2NrLastScanTickGeneration = 0;
+    rdr2NrScanTickEpoch.store(0, std::memory_order_release);
 }
 
 std::recursive_mutex nrOwnersMutex;
@@ -840,6 +850,32 @@ void NoteRdr2CommandListReset(ID3D12CommandList* commandList, bool succeeded)
                   pending->second.generation, newGeneration, pending->second.epoch);
         rdr2NrPendingSubmissions.erase(pending);
     }
+}
+
+unsigned long long ScanTickEpoch_Dx12(ID3D12GraphicsCommandList* commandList)
+{
+    if (!IsRdr2PureDarkNrClock() || commandList == nullptr || !Config::Instance()->DlssNrEnabled.value_or_default())
+        return State::Instance().frameCount;
+
+    auto* const list = static_cast<ID3D12CommandList*>(commandList);
+
+    std::lock_guard<std::mutex> lock(rdr2NrSubmissionMutex);
+
+    // The same (list, generation) pair as last time means this is another call within the same
+    // recording -- e.g. a second NR pass/owner touching the same command list before it is Reset()
+    // again -- so it must not advance, matching ExposureScan::Tick()'s original per-frame contract.
+    // A different list, or the same list whose generation moved (NoteRdr2CommandListReset saw a
+    // successful Reset() on it since), means a new recording has genuinely begun: advance, whether
+    // or not that recording ever ends up matched at ExecuteCommandLists.
+    const auto generation = Rdr2NrCurrentGeneration(list);
+    if (list != rdr2NrLastScanTickList || generation != rdr2NrLastScanTickGeneration)
+    {
+        rdr2NrLastScanTickList = list;
+        rdr2NrLastScanTickGeneration = generation;
+        rdr2NrScanTickEpoch.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    return rdr2NrScanTickEpoch.load(std::memory_order_acquire);
 }
 
 void FinishedPictureResetCommandList(ID3D12CommandList* cmd)

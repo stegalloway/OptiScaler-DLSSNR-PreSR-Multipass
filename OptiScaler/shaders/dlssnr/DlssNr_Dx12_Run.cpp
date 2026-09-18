@@ -1,8 +1,10 @@
 #include "pch.h"
 #include "DlssNr_Dx12_State.h"
+#include "DlssNr_Rdr2Epoch.h"
 
-auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth, ID3D12Resource* motion,
-             ID3D12Resource* output, const DlssNrFrameInfo& frame, ID3D12CommandQueue* timingQueue) -> void
+auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth,
+                             ID3D12Resource* motion, ID3D12Resource* output, const DlssNrFrameInfo& frame,
+                             ID3D12CommandQueue* timingQueue) -> void
 {
     std::lock_guard<std::recursive_mutex> nrLock(mutex);
     const Config& cfg = *Config::Instance();
@@ -33,9 +35,9 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     const D3D12_RESOURCE_STATES outputArrival =
         frame.PipelineManagedStates ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
         : frame.FinishedPicture     ? (D3D12_RESOURCE_STATES) frame.OutputArrivalState
-        : frame.BeforeUpscale ? (!frame.PrivateColorCopy && Config::Instance()->ColorResourceBarrier.has_value()
-                                     ? (D3D12_RESOURCE_STATES) Config::Instance()->ColorResourceBarrier.value()
-                                     : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
+        : frame.BeforeUpscale       ? (!frame.PrivateColorCopy && Config::Instance()->ColorResourceBarrier.has_value()
+                                           ? (D3D12_RESOURCE_STATES) Config::Instance()->ColorResourceBarrier.value()
+                                           : D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE)
         : Config::Instance()->OutputResourceBarrier.has_value()
             ? (D3D12_RESOURCE_STATES) Config::Instance()->OutputResourceBarrier.value()
             : D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -73,11 +75,10 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     const auto guideDesc = depth->GetDesc();
     const auto motionDesc = motion->GetDesc();
     const auto guides = DlssNr::ResolveGuideRegions(
-        { (unsigned int) guideDesc.Width, guideDesc.Height },
-        { (unsigned int) motionDesc.Width, motionDesc.Height },
+        { (unsigned int) guideDesc.Width, guideDesc.Height }, { (unsigned int) motionDesc.Width, motionDesc.Height },
         { frame.RenderSubrectWidth, frame.RenderSubrectHeight }, { frame.OutputWidth, frame.OutputHeight },
-        frame.MotionVectorsLowResolution, frame.DepthSubrectBaseX, frame.DepthSubrectBaseY,
-        frame.MotionSubrectBaseX, frame.MotionSubrectBaseY);
+        frame.MotionVectorsLowResolution, frame.DepthSubrectBaseX, frame.DepthSubrectBaseY, frame.MotionSubrectBaseX,
+        frame.MotionSubrectBaseY);
     if (!guides.depth.valid() || !guides.motion.valid())
     {
         ReportSkipOnce("depth or motion-vector subrect is empty");
@@ -123,8 +124,8 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     {
         loggedGuides = guidesNow;
         LOG_INFO("DLSS-NR guides: depth {}, motion vector scale {} x {}, guides {}x{} for a {}x{} frame",
-                 nr.guideDepthInverted ? "inverted" : "not inverted", nr.guideMvScaleX, nr.guideMvScaleY,
-                 guideWidth, guideHeight, width, height);
+                 nr.guideDepthInverted ? "inverted" : "not inverted", nr.guideMvScaleX, nr.guideMvScaleY, guideWidth,
+                 guideHeight, width, height);
     }
 
     const unsigned int configuredPasses =
@@ -150,8 +151,8 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     const auto workWidth = (unsigned int) (width * workScale + 0.5f);
     const auto workHeight = (unsigned int) (height * workScale + 0.5f);
     const bool reduced = workWidth != width || workHeight != height;
-    if (!PrepareRunModels(cmdList, device, frame, desc, { width, height }, { workWidth, workHeight },
-                          workScale, requestedPasses))
+    if (!PrepareRunModels(cmdList, device, frame, desc, { width, height }, { workWidth, workHeight }, workScale,
+                          requestedPasses))
     {
         device->Release();
         return;
@@ -252,7 +253,13 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     auto* modelInput = encoded.modelInput;
 
     // Read the exposure scan's candidates on the pass's own command list, once a frame.
-    DlssNr::ExposureScan::Tick(device, cmdList, frame.SubmissionEpoch);
+    //
+    // Deliberately NOT frame.SubmissionEpoch: on RDR2/PureDark that only advances once a frame's
+    // command list is CONFIRMED submitted at ExecuteCommandLists, so a single dropped/aborted frame
+    // would otherwise freeze the scan (and a scan-driven white point with it) until the next match --
+    // see ScanTickEpoch_Dx12's comment in DlssNr_Rdr2Epoch.h. For every other game this call returns
+    // exactly what frame.SubmissionEpoch would have.
+    DlssNr::ExposureScan::Tick(device, cmdList, DlssNr::ScanTickEpoch_Dx12(cmdList));
 
     ID3D12Resource* depthIn = ReadableGuide(device, cmdList, depth, &nr.depthClone);
     ID3D12Resource* motionIn = ReadableGuide(device, cmdList, motion, &nr.motionClone);
@@ -342,10 +349,10 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         MakeModelWritable(passOutput);
         bool evaluated = false;
         result = static_cast<int>(nr.models[pass].Run(
-            cmdList, device, passInput, depthIn, motionIn, passOutput, workWidth, workHeight, guideWidth,
-            guideHeight, motionWidth, motionHeight, depthBaseX, depthBaseY, motionBaseX, motionBaseY,
-            nr.guideDepthInverted, nr.reset, nr.guideMvScaleX * mvToWorkX, nr.guideMvScaleY * mvToWorkY,
-            ModelSettings(cfg, pass), frame.SubmissionEpoch, &evaluated));
+            cmdList, device, passInput, depthIn, motionIn, passOutput, workWidth, workHeight, guideWidth, guideHeight,
+            motionWidth, motionHeight, depthBaseX, depthBaseY, motionBaseX, motionBaseY, nr.guideDepthInverted,
+            nr.reset, nr.guideMvScaleX * mvToWorkX, nr.guideMvScaleY * mvToWorkY, ModelSettings(cfg, pass),
+            frame.SubmissionEpoch, &evaluated));
         modelRunning = evaluated && result == NVSDK_NGX_Result_Success;
         if (!evaluated)
             break;
@@ -390,8 +397,8 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         if (lastSuper != workWidth || result != 1)
         {
             lastSuper = workWidth;
-            LOG_INFO("DLSS-NR SUPERSAMPLE: model at {}x{} = {:.2f}x native {}x{}, evaluate result {} ({})",
-                     workWidth, workHeight, (float) workWidth / (float) width, width, height, result,
+            LOG_INFO("DLSS-NR SUPERSAMPLE: model at {}x{} = {:.2f}x native {}x{}, evaluate result {} ({})", workWidth,
+                     workHeight, (float) workWidth / (float) width, width, height, result,
                      NgxResultName((unsigned int) result));
         }
     }
@@ -419,12 +426,19 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         bool enlargementReady = true;
         if (cfg.DlssNrTransfer.value_or_default() == 2 && reduced)
         {
-            auto* enlarged = EnlargeMatchedResidual(cmdList, device, modelInput, finalAnswer, depthIn, motionIn,
-                                                    frame, resolveParams, enlargementReset, timingQueue);
+            auto* enlarged = EnlargeMatchedResidual(cmdList, device, modelInput, finalAnswer, depthIn, motionIn, frame,
+                                                    resolveParams, enlargementReset, timingQueue);
             enlargementReady = enlarged != nullptr;
-            if (enlarged) { resolveAnswer = enlarged; resolveParams.Transfer = 2; }
+            if (enlarged)
+            {
+                resolveAnswer = enlarged;
+                resolveParams.Transfer = 2;
+            }
             if (enlarged && resolveParams.DebugView == 2)
-            { resolveAnswer = finalAnswer; resolveParams.Transfer = 1; } // Inspect the actual model answer.
+            {
+                resolveAnswer = finalAnswer;
+                resolveParams.Transfer = 1;
+            } // Inspect the actual model answer.
         }
         else
         {
@@ -434,8 +448,7 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
         // Resolve pre-SR inputs without UAV support through an owned scratch and copy-back.
         ID3D12Resource* resolveOriginal = targetSupportsUav ? nr.hdrCopy : target;
-        ID3D12Resource* resolveTarget =
-            targetSupportsUav ? target : nr.hdrCopy;
+        ID3D12Resource* resolveTarget = targetSupportsUav ? target : nr.hdrCopy;
 
         if (targetSupportsUav)
         {
@@ -447,8 +460,9 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         }
 
-        const bool resolved = enlargementReady && shader.DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer,
-                                                  resolveOriginal, motionIn, exposureTex, resolveTarget, nullptr);
+        const bool resolved =
+            enlargementReady && shader.DispatchPass(cmdList, resolveParams, resolveProxy, resolveAnswer,
+                                                    resolveOriginal, motionIn, exposureTex, resolveTarget, nullptr);
         compositionSucceeded = resolved;
 
         if (resolved && !targetSupportsUav)
@@ -480,8 +494,8 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         // Schedule matched proxy/output capture for delayed readback.
         if (captureFrames.isActive())
         {
-            captureFrames.record(cmdList, device, nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                 target, targetState);
+            captureFrames.record(cmdList, device, nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, target,
+                                 targetState);
 
             if (captureFrames.readyToWrite() && captureWriteAtFrame == 0)
                 captureWriteAtFrame = frames + 8;
@@ -501,8 +515,7 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     if (nr.passScratch != nullptr)
         MakeModelWritable(nr.passScratch);
 
-    Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
     if (nr.passClamp != nullptr)
         MakeModelWritable(nr.passClamp);
@@ -517,8 +530,7 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
 
     // Restore guide clones to COPY_DEST for the next frame's refresh.
     if (depthIn == nr.depthClone)
-        Barrier(cmdList, nr.depthClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COPY_DEST);
+        Barrier(cmdList, nr.depthClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
 
     if (motionIn == nr.motionClone)
         Barrier(cmdList, nr.motionClone, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
