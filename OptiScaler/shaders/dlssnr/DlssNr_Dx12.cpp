@@ -5,6 +5,7 @@
 #include <list>
 #include <wrl/client.h>
 #include <resource_tracking/ResTrack_Dx12.h>
+#include <hooks/Rdr2PureDark.h>
 #include <dlssnr/DlssNr_FinishedPictureBridge_Dx11.h>
 #include <dlssnr/DlssNr_HoldParameters_Dx12.h>
 #include <upscalers/ShaderPipeline_Dx12.h>
@@ -62,7 +63,7 @@ std::atomic_bool rdr2NrEpochAnnounced { false };
 
 bool IsRdr2PureDarkNrClock()
 {
-    return _wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0;
+    return IsRdr2PureDarkCoexistence();
 }
 
 void Rdr2NrSubmitted(UINT count, ID3D12CommandList* const* lists)

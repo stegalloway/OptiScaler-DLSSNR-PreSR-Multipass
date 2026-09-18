@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "D3D12_Hooks.h"
+#include "Rdr2PureDark.h"
 #include <dlssnr/DlssNr_ExposureScan.h>
 
 #include <Util.h>
@@ -2327,7 +2328,7 @@ static void UnhookDevice()
 
 void D3D12Hooks::Hook()
 {
-    if (_wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0)
+    if (IsRdr2PureDarkCoexistence())
     {
         LOG_INFO("RDR2 PureDark coexistence: skipping global D3D12 export hook");
         return;
@@ -2349,7 +2350,7 @@ void D3D12Hooks::Hook()
 
 void D3D12Hooks::HookAgility(HMODULE module)
 {
-    if (_wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0)
+    if (IsRdr2PureDarkCoexistence())
     {
         LOG_INFO("RDR2 PureDark coexistence: skipping global D3D12 Agility hook");
         return;

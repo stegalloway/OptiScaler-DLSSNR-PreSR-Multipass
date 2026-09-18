@@ -28,6 +28,7 @@
 #include <fsr4/FSR4ModelSelection.h>
 
 #include <hooks/Dxgi_Hooks.h>
+#include <hooks/Rdr2PureDark.h>
 #include <hooks/D3D11_Hooks.h>
 #include <hooks/D3D12_Hooks.h>
 #include <hooks/Vulkan_Hooks.h>
@@ -1861,10 +1862,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // RDR2 + PureDark coexistence, ported from the known-good 2026-09-15 ASI.
         // PureDark owns presentation / Streamline / Reflex / frame generation.
         // OptiScaler keeps NGX interception and device-level D3D12 hooks for SR / NR.
-        const bool rdr2PureDarkCoexistence =
-            _wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0;
-
-        if (rdr2PureDarkCoexistence)
+        if (IsRdr2PureDarkCoexistence())
         {
             auto* cfg = Config::Instance();
 

@@ -1,6 +1,7 @@
 #include <pch.h>
 
 #include "Streamline_Hooks.h"
+#include "Rdr2PureDark.h"
 #if defined(OPTISCALER_RTX40_MFG)
 #include <framegen/dlssg/MfgUnlock.h>
 #endif
@@ -37,7 +38,7 @@ static bool IsSL1AndFGActive()
 
 static bool IsRdr2PureDark()
 {
-    return _wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0;
+    return IsRdr2PureDarkCoexistence();
 }
 
 static bool IsRdr2PureDarkMfg()

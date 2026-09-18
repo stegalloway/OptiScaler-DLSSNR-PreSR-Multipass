@@ -13,6 +13,7 @@
 #include <with_dx12/with_dx12.h>
 
 #include "Hook_Utils.h"
+#include "Rdr2PureDark.h"
 
 static DxgiProxy::PFN_CreateDxgiFactory o_CreateDXGIFactory = nullptr;
 static DxgiProxy::PFN_CreateDxgiFactory1 o_CreateDXGIFactory1 = nullptr;
@@ -264,7 +265,7 @@ inline static HRESULT hkCreateDXGIFactory2(UINT Flags, REFIID riid, IDXGIFactory
 
 void DxgiHooks::Hook()
 {
-    if (_wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0)
+    if (IsRdr2PureDarkCoexistence())
     {
         LOG_INFO("RDR2 PureDark coexistence: skipping global DXGI hook");
         return;

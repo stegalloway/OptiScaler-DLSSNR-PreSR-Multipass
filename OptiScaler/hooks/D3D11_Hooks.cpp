@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "D3D11_Hooks.h"
+#include "Rdr2PureDark.h"
 
 #include <Util.h>
 #include <Config.h>
@@ -523,7 +524,7 @@ void D3D11Hooks::HookToDevice(ID3D11Device* InDevice) { HookToDeviceLocal(InDevi
 
 void D3D11Hooks::Hook(HMODULE dx11Module)
 {
-    if (_wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0)
+    if (IsRdr2PureDarkCoexistence())
     {
         LOG_INFO("RDR2 PureDark coexistence: skipping global D3D11 hook");
         return;

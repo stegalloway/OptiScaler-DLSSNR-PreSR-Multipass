@@ -2,6 +2,7 @@
 
 #include <dlssnr/DlssNr_ExposureScan.h>
 #include <dlssnr/DlssNr.h>
+#include <hooks/Rdr2PureDark.h>
 
 #include "ResTrack_dx12.h"
 
@@ -1891,7 +1892,7 @@ void ResTrack_Dx12::HookLateNrQueue(ID3D12Device* device)
     std::lock_guard<std::mutex> lock(hookMutex);
 
     ID3D12Device* trackingDevice = device;
-    if (_wcsicmp(Util::ExePath().filename().c_str(), L"RDR2.exe") == 0)
+    if (IsRdr2PureDarkCoexistence())
     {
         ID3D12Device* realDevice = nullptr;
         if (CheckForRealObject("RDR2 PureDark late-NR device", device, (IUnknown**)&realDevice) &&
