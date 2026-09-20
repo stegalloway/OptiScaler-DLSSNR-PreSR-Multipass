@@ -1,7 +1,7 @@
 // MV-reprojected temporal accumulation of the pre-SR NR residual.
 // Mode 0 blends (edited - original) into history; invalid reprojection fades in from zero.
 // Mode 1 applies the signed residual after upscaling.
-// Bindings match the main NR shader; appended history fields fit its existing constant-buffer allocation.
+// Bindings match the main NR shader; the full mirrored ABI uses a 512-byte backing CBV.
 
 #ifdef VK_MODE
 [[vk::binding(0, 0)]]
@@ -10,40 +10,57 @@ cbuffer Params : register(b0, space0)
 cbuffer Params : register(b0)
 #endif
 {
-    uint  gMode;
-    float gWhitePoint;
-    uint  gWidth;
-    uint  gHeight;
-    float gTransferStrength;
-    float gColourStrength;
-    uint  gDebugView;
-    float gMaxRatio;
-    uint  gPassthrough;
-    float gMvScaleX;
-    float gMvScaleY;
-    uint  gGuideWidth;
-    uint  gGuideHeight;
-    uint  gCompareMode;
-    float gCompareSplit;
-    float gCompareZoom;
-    uint  gCompareSwap;
-    uint  gTransfer;
-    float gDebugScale;
-    uint  gReversibleMode;
-    uint  gApplyModel;
-    uint  gReserved;
-    float gResidualScale;
-    uint  gSkinProtection;
-    uint  gShowSkinMask;
-    float gSkinDetail;
-    float gSkinColour;
-    float gEnvironmentDetail;
-    float gEnvironmentColour;
-    float gResidualBlend;   // v2 only: history blend rate, 0..1. 1 == no accumulation (== v1).
-    uint gResidualHistoryValid;
-    uint gResidualMotionBaseX;
-    uint gResidualMotionBaseY;
-    float gReplaceDetailUnused, gModelWorkScaleUnused, gResidualConfidenceSensitivity;
+    // Frozen revision-3 ABI: explicit offsets throughout (FXC forbids mixed packing).
+    uint gMode : packoffset(c0.x);
+    float gWhitePoint : packoffset(c0.y);
+    uint gWidth : packoffset(c0.z);
+    uint gHeight : packoffset(c0.w);
+    float gTransferStrength : packoffset(c1.x);
+    float gColourStrength : packoffset(c1.y);
+    uint gDebugView : packoffset(c1.z);
+    float gMaxRatio : packoffset(c1.w);
+    uint gPassthrough : packoffset(c2.x);
+    float gMvScaleX : packoffset(c2.y);
+    float gMvScaleY : packoffset(c2.z);
+    uint gGuideWidth : packoffset(c2.w);
+    uint gGuideHeight : packoffset(c3.x);
+    uint gCompareMode : packoffset(c3.y);
+    float gCompareSplit : packoffset(c3.z);
+    float gCompareZoom : packoffset(c3.w);
+    uint gCompareSwap : packoffset(c4.x);
+    uint gTransfer : packoffset(c4.y);
+    float gDebugScale : packoffset(c4.z);
+    uint gReversibleMode : packoffset(c4.w);
+    uint gApplyModel : packoffset(c5.x);
+    uint gReserved : packoffset(c5.y);
+    float gResidualScale : packoffset(c5.z);
+    uint gSkinProtection : packoffset(c5.w);
+    uint gShowSkinMask : packoffset(c6.x);
+    float gSkinDetail : packoffset(c6.y);
+    float gSkinColour : packoffset(c6.z);
+    float gEnvironmentDetail : packoffset(c6.w);
+    float gEnvironmentColour : packoffset(c7.x);
+    float gResidualBlend : packoffset(c7.y);
+    uint gResidualHistoryValid : packoffset(c7.z);
+    uint gResidualMotionBaseX : packoffset(c7.w);
+    uint gResidualMotionBaseY : packoffset(c8.x);
+    float gReplaceDetailUnused : packoffset(c8.y);
+    float gModelWorkScaleUnused : packoffset(c8.z);
+    float gResidualConfidenceSensitivity : packoffset(c8.w);
+    uint gExposureModeUnused : packoffset(c9.x);
+    float gPreExposureUnused : packoffset(c9.y);
+    float gExposureTrimUnused : packoffset(c9.z);
+    float gExposureProtectionUnused : packoffset(c9.w);
+    uint gExposureAnchorCountUnused : packoffset(c10.x);
+    uint gExposureSourceWidthUnused : packoffset(c10.y);
+    uint gExposureSourceHeightUnused : packoffset(c10.z);
+    uint gExposurePaddingUnused : packoffset(c10.w);
+    float4 gExposureAnchorsUnused[4] : packoffset(c11);
+    float gResidualMotionSign : packoffset(c15.x);
+    uint gResidualFrameWidth : packoffset(c15.y);
+    uint gResidualFrameHeight : packoffset(c15.z);
+    uint gResidualOutputWidth : packoffset(c15.w);
+    uint gResidualOutputHeight : packoffset(c16.x);
 };
 
 // Same registers and the same SPIR-V binding numbers as dlssnr.hlsl, including the slots these

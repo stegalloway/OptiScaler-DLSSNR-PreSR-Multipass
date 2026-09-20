@@ -33,7 +33,7 @@ bool closeFloat(float a, float b) { return std::abs(a - b) < 0.0001f; }
 int main()
 try
 {
-    static_assert(sizeof(DlssNrConstants) == 256);
+    static_assert(sizeof(DlssNrConstants) == 512);
     static_assert(offsetof(DlssNrConstants, ResidualBlend) == 116);
     static_assert(offsetof(DlssNrConstants, ResidualMotionBaseY) == 128);
     ComPtr<ID3D11Device> device;

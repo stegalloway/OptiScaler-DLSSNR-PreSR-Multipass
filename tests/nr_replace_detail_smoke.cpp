@@ -50,7 +50,7 @@ try
     static_assert(offsetof(DlssNrConstants, ResidualMotionBaseY) == 128);
     static_assert(offsetof(DlssNrConstants, ReplaceDetailStrength) == 132);
     static_assert(offsetof(DlssNrConstants, ModelWorkScale) == 136);
-    static_assert(sizeof(DlssNrConstants) == 256);
+    static_assert(sizeof(DlssNrConstants) == 512);
 
     ComPtr<ID3DBlob> code, errors;
     HRESULT compiled = D3DCompileFromFile(argv[1], nullptr, nullptr, "CSMain", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3,

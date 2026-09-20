@@ -1,0 +1,416 @@
+{
+  "revision": 3,
+  "base": "0dfd181a4e5e3bd0cdf9b5a2e75530fc616ad0b6",
+  "selected": "append-only shared constants expansion",
+  "alignment": 256,
+  "cpp_size": 512,
+  "explicit_bytes": 260,
+  "hlsl_min_register_extent": 272,
+  "fields": [
+    {
+      "name": "Mode",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 0,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "WhitePoint",
+      "type": "float",
+      "count": 1,
+      "offset": 4,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "Width",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 8,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "Height",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 12,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "TransferStrength",
+      "type": "float",
+      "count": 1,
+      "offset": 16,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ColourStrength",
+      "type": "float",
+      "count": 1,
+      "offset": 20,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "DebugView",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 24,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "MaxRatio",
+      "type": "float",
+      "count": 1,
+      "offset": 28,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "Passthrough",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 32,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "MvScaleX",
+      "type": "float",
+      "count": 1,
+      "offset": 36,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "MvScaleY",
+      "type": "float",
+      "count": 1,
+      "offset": 40,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "GuideWidth",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 44,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "GuideHeight",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 48,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "CompareMode",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 52,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "CompareSplit",
+      "type": "float",
+      "count": 1,
+      "offset": 56,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "CompareZoom",
+      "type": "float",
+      "count": 1,
+      "offset": 60,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "CompareSwap",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 64,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "Transfer",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 68,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "DebugScale",
+      "type": "float",
+      "count": 1,
+      "offset": 72,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ReversibleMode",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 76,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ApplyModel",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 80,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "Reserved",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 84,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ResidualScale",
+      "type": "float",
+      "count": 1,
+      "offset": 88,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "SkinProtection",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 92,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ShowSkinMask",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 96,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "SkinDetail",
+      "type": "float",
+      "count": 1,
+      "offset": 100,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "SkinColour",
+      "type": "float",
+      "count": 1,
+      "offset": 104,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "EnvironmentDetail",
+      "type": "float",
+      "count": 1,
+      "offset": 108,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "EnvironmentColour",
+      "type": "float",
+      "count": 1,
+      "offset": 112,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ResidualBlend",
+      "type": "float",
+      "count": 1,
+      "offset": 116,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ResidualHistoryValid",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 120,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ResidualMotionBaseX",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 124,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ResidualMotionBaseY",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 128,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ReplaceDetailStrength",
+      "type": "float",
+      "count": 1,
+      "offset": 132,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ModelWorkScale",
+      "type": "float",
+      "count": 1,
+      "offset": 136,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ResidualConfidenceSensitivity",
+      "type": "float",
+      "count": 1,
+      "offset": 140,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ExposureMode",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 144,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "PreExposure",
+      "type": "float",
+      "count": 1,
+      "offset": 148,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ExposureTrim",
+      "type": "float",
+      "count": 1,
+      "offset": 152,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ExposureProtection",
+      "type": "float",
+      "count": 1,
+      "offset": 156,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ExposureAnchorCount",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 160,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ExposureSourceWidth",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 164,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ExposureSourceHeight",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 168,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ExposurePadding",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 172,
+      "size": 4,
+      "origin": "upstream"
+    },
+    {
+      "name": "ExposureAnchors",
+      "type": "float",
+      "count": 16,
+      "offset": 176,
+      "size": 64,
+      "origin": "upstream"
+    },
+    {
+      "name": "ResidualMotionSign",
+      "type": "float",
+      "count": 1,
+      "offset": 240,
+      "size": 4,
+      "origin": "NRSTAB"
+    },
+    {
+      "name": "ResidualFrameWidth",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 244,
+      "size": 4,
+      "origin": "NRSTAB"
+    },
+    {
+      "name": "ResidualFrameHeight",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 248,
+      "size": 4,
+      "origin": "NRSTAB"
+    },
+    {
+      "name": "ResidualOutputWidth",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 252,
+      "size": 4,
+      "origin": "NRSTAB"
+    },
+    {
+      "name": "ResidualOutputHeight",
+      "type": "uint32_t",
+      "count": 1,
+      "offset": 256,
+      "size": 4,
+      "origin": "NRSTAB"
+    }
+  ],
+  "padding": {
+    "offset": 260,
+    "size": 252
+  },
+  "anchor_packing": "ExposureAnchors[i] = HLSL gExposureAnchors[i/4][i%4], offset 176+4*i. Four float4 registers, not float2[8]."
+}

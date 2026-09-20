@@ -214,7 +214,7 @@ struct alignas(256) DlssNrConstants
     // ResidualAcrossRR v2 only (dlssnr_residual.hlsl). History blend rate for the MV-reprojected
     // accumulator, 0..1. Read only by that separate shader; dlssnr.hlsl never declares it. Appended
     // here rather than in a new struct so DispatchResidualPass reuses the existing constant upload --
-    // it lands inside the 256-byte alignas padding, so sizeof(DlssNrConstants) is unchanged.
+    // Existing field offsets are shared by the NR, residual and finished-colour PSOs.
     float ResidualBlend;
     uint32_t ResidualHistoryValid;
     uint32_t ResidualMotionBaseX;
@@ -231,10 +231,66 @@ struct alignas(256) DlssNrConstants
     uint32_t ExposureSourceHeight;
     uint32_t ExposurePadding;
     float ExposureAnchors[16]; // Eight float2 pairs, packed as four float4s in HLSL.
+    // Append-only NRSTAB ABI extension (revision 3). Upstream bytes 0..239 stay unchanged.
+    // The residual shader mirrors the intervening exposure fields before these offsets.
+    float ResidualMotionSign;
+    uint32_t ResidualFrameWidth;
+    uint32_t ResidualFrameHeight;
+    uint32_t ResidualOutputWidth;
+    uint32_t ResidualOutputHeight;
 };
-static_assert(sizeof(DlssNrConstants) == 256);
+static_assert(sizeof(DlssNrConstants) == 512);
+static_assert(alignof(DlssNrConstants) == 256);
+static_assert(offsetof(DlssNrConstants, Mode) == 0);
+static_assert(offsetof(DlssNrConstants, WhitePoint) == 4);
+static_assert(offsetof(DlssNrConstants, Width) == 8);
+static_assert(offsetof(DlssNrConstants, Height) == 12);
+static_assert(offsetof(DlssNrConstants, TransferStrength) == 16);
+static_assert(offsetof(DlssNrConstants, ColourStrength) == 20);
+static_assert(offsetof(DlssNrConstants, DebugView) == 24);
+static_assert(offsetof(DlssNrConstants, MaxRatio) == 28);
+static_assert(offsetof(DlssNrConstants, Passthrough) == 32);
+static_assert(offsetof(DlssNrConstants, MvScaleX) == 36);
+static_assert(offsetof(DlssNrConstants, MvScaleY) == 40);
+static_assert(offsetof(DlssNrConstants, GuideWidth) == 44);
+static_assert(offsetof(DlssNrConstants, GuideHeight) == 48);
+static_assert(offsetof(DlssNrConstants, CompareMode) == 52);
+static_assert(offsetof(DlssNrConstants, CompareSplit) == 56);
+static_assert(offsetof(DlssNrConstants, CompareZoom) == 60);
+static_assert(offsetof(DlssNrConstants, CompareSwap) == 64);
+static_assert(offsetof(DlssNrConstants, Transfer) == 68);
+static_assert(offsetof(DlssNrConstants, DebugScale) == 72);
+static_assert(offsetof(DlssNrConstants, ReversibleMode) == 76);
+static_assert(offsetof(DlssNrConstants, ApplyModel) == 80);
+static_assert(offsetof(DlssNrConstants, Reserved) == 84);
+static_assert(offsetof(DlssNrConstants, ResidualScale) == 88);
+static_assert(offsetof(DlssNrConstants, SkinProtection) == 92);
+static_assert(offsetof(DlssNrConstants, ShowSkinMask) == 96);
+static_assert(offsetof(DlssNrConstants, SkinDetail) == 100);
+static_assert(offsetof(DlssNrConstants, SkinColour) == 104);
+static_assert(offsetof(DlssNrConstants, EnvironmentDetail) == 108);
+static_assert(offsetof(DlssNrConstants, EnvironmentColour) == 112);
+static_assert(offsetof(DlssNrConstants, ResidualBlend) == 116);
+static_assert(offsetof(DlssNrConstants, ResidualHistoryValid) == 120);
+static_assert(offsetof(DlssNrConstants, ResidualMotionBaseX) == 124);
+static_assert(offsetof(DlssNrConstants, ResidualMotionBaseY) == 128);
 static_assert(offsetof(DlssNrConstants, ReplaceDetailStrength) == 132);
+static_assert(offsetof(DlssNrConstants, ModelWorkScale) == 136);
+static_assert(offsetof(DlssNrConstants, ResidualConfidenceSensitivity) == 140);
+static_assert(offsetof(DlssNrConstants, ExposureMode) == 144);
+static_assert(offsetof(DlssNrConstants, PreExposure) == 148);
+static_assert(offsetof(DlssNrConstants, ExposureTrim) == 152);
+static_assert(offsetof(DlssNrConstants, ExposureProtection) == 156);
+static_assert(offsetof(DlssNrConstants, ExposureAnchorCount) == 160);
+static_assert(offsetof(DlssNrConstants, ExposureSourceWidth) == 164);
+static_assert(offsetof(DlssNrConstants, ExposureSourceHeight) == 168);
+static_assert(offsetof(DlssNrConstants, ExposurePadding) == 172);
 static_assert(offsetof(DlssNrConstants, ExposureAnchors) == 176);
+static_assert(offsetof(DlssNrConstants, ResidualMotionSign) == 240);
+static_assert(offsetof(DlssNrConstants, ResidualFrameWidth) == 244);
+static_assert(offsetof(DlssNrConstants, ResidualFrameHeight) == 248);
+static_assert(offsetof(DlssNrConstants, ResidualOutputWidth) == 252);
+static_assert(offsetof(DlssNrConstants, ResidualOutputHeight) == 256);
 
 // Local mode numbering for dlssnr_residual.hlsl (a separate blob / PSO from the DlssNrMode shader).
 enum DlssNrResidualMode : uint32_t

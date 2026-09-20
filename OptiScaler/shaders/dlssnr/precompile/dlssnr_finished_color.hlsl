@@ -5,8 +5,57 @@
 #endif
 cbuffer Params : register(b0)
 {
-    uint mode; float exposureScale; uint width; uint height;
-    float sceneIsLinear; float curveUpdateWeight; uint curveHistoryValid; float maxRatio;
+    // Frozen revision-3 ABI: explicit offsets throughout (FXC forbids mixed packing).
+    uint mode : packoffset(c0.x);
+    float exposureScale : packoffset(c0.y);
+    uint width : packoffset(c0.z);
+    uint height : packoffset(c0.w);
+    float sceneIsLinear : packoffset(c1.x);
+    float curveUpdateWeight : packoffset(c1.y);
+    uint curveHistoryValid : packoffset(c1.z);
+    float maxRatio : packoffset(c1.w);
+    uint layoutUnusedPassthrough : packoffset(c2.x);
+    float layoutUnusedMvScaleX : packoffset(c2.y);
+    float layoutUnusedMvScaleY : packoffset(c2.z);
+    uint layoutUnusedGuideWidth : packoffset(c2.w);
+    uint layoutUnusedGuideHeight : packoffset(c3.x);
+    uint layoutUnusedCompareMode : packoffset(c3.y);
+    float layoutUnusedCompareSplit : packoffset(c3.z);
+    float layoutUnusedCompareZoom : packoffset(c3.w);
+    uint layoutUnusedCompareSwap : packoffset(c4.x);
+    uint layoutUnusedTransfer : packoffset(c4.y);
+    float layoutUnusedDebugScale : packoffset(c4.z);
+    uint layoutUnusedReversibleMode : packoffset(c4.w);
+    uint layoutUnusedApplyModel : packoffset(c5.x);
+    uint layoutUnusedReserved : packoffset(c5.y);
+    float layoutUnusedResidualScale : packoffset(c5.z);
+    uint layoutUnusedSkinProtection : packoffset(c5.w);
+    uint layoutUnusedShowSkinMask : packoffset(c6.x);
+    float layoutUnusedSkinDetail : packoffset(c6.y);
+    float layoutUnusedSkinColour : packoffset(c6.z);
+    float layoutUnusedEnvironmentDetail : packoffset(c6.w);
+    float layoutUnusedEnvironmentColour : packoffset(c7.x);
+    float layoutUnusedResidualBlend : packoffset(c7.y);
+    uint layoutUnusedResidualHistoryValid : packoffset(c7.z);
+    uint layoutUnusedResidualMotionBaseX : packoffset(c7.w);
+    uint layoutUnusedResidualMotionBaseY : packoffset(c8.x);
+    float layoutUnusedReplaceDetailStrength : packoffset(c8.y);
+    float layoutUnusedModelWorkScale : packoffset(c8.z);
+    float layoutUnusedResidualConfidenceSensitivity : packoffset(c8.w);
+    uint layoutUnusedExposureMode : packoffset(c9.x);
+    float layoutUnusedPreExposure : packoffset(c9.y);
+    float layoutUnusedExposureTrim : packoffset(c9.z);
+    float layoutUnusedExposureProtection : packoffset(c9.w);
+    uint layoutUnusedExposureAnchorCount : packoffset(c10.x);
+    uint layoutUnusedExposureSourceWidth : packoffset(c10.y);
+    uint layoutUnusedExposureSourceHeight : packoffset(c10.z);
+    uint layoutUnusedExposurePadding : packoffset(c10.w);
+    float4 layoutUnusedExposureAnchors[4] : packoffset(c11);
+    float gResidualMotionSign : packoffset(c15.x);
+    uint gResidualFrameWidth : packoffset(c15.y);
+    uint gResidualFrameHeight : packoffset(c15.z);
+    uint gResidualOutputWidth : packoffset(c15.w);
+    uint gResidualOutputHeight : packoffset(c16.x);
 };
 #ifdef VULKAN
 [[vk::binding(1, 0)]]

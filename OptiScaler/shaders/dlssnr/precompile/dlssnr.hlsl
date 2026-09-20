@@ -6,42 +6,57 @@ cbuffer Params : register(b0, space0)
 cbuffer Params : register(b0)
 #endif
 {
-    uint  gMode;
-    float gWhitePoint;
-    uint  gWidth;
-    uint  gHeight;
-    float gTransferStrength;
-    float gColourStrength;
-    uint  gDebugView;
-    float gMaxRatio;
-    uint  gPassthrough;
-    float gMvScaleX;     // motion vector units -> pixels of this dispatch
-    float gMvScaleY;
-    uint  gGuideWidth;   // the motion texture's valid region
-    uint  gGuideHeight;
-    uint  gCompareMode;  // 0 off, 1 side by side, 2 wipe
-    float gCompareSplit; // where the wipe cuts, 0..1
-    float gCompareZoom;  // side by side: 1 fits the frame, 2 fills the half
-    uint  gCompareSwap;  // put the edited frame on the other side
-    uint  gTransfer;     // 0 classic, 1 matched residual -- how a below-size model comes back
-    float gDebugScale;   // what the debug views are scaled by, held still while the meter moves
-    uint  gReversibleMode; // 0 knee, 1 Neutwo+composed, 2 Neutwo+replace, 3 hybrid+composed, 4 hybrid+replace
-    uint  gApplyModel;     // 0 output the clean frame (pass still runs), 1 apply the model's edit
-    uint  gReserved;
-    float gResidualScale;
-    uint  gSkinProtection;
-    uint  gShowSkinMask;
-    float gSkinDetail;
-    float gSkinColour;
-    float gEnvironmentDetail;
-    float gEnvironmentColour;
-    float gResidualBlendUnused;
-    uint gResidualHistoryValidUnused, gResidualMotionBaseXUnused, gResidualMotionBaseYUnused;
-    float gReplaceDetailStrength, gModelWorkScale, gResidualConfidenceUnused;
-    uint gExposureMode;
-    float gPreExposure, gExposureTrim, gExposureProtection;
-    uint gExposureAnchorCount, gExposureSourceWidth, gExposureSourceHeight, gExposurePadding;
-    float4 gExposureAnchors[4];
+    // Frozen revision-3 ABI: explicit offsets throughout (FXC forbids mixed packing).
+    uint gMode : packoffset(c0.x);
+    float gWhitePoint : packoffset(c0.y);
+    uint gWidth : packoffset(c0.z);
+    uint gHeight : packoffset(c0.w);
+    float gTransferStrength : packoffset(c1.x);
+    float gColourStrength : packoffset(c1.y);
+    uint gDebugView : packoffset(c1.z);
+    float gMaxRatio : packoffset(c1.w);
+    uint gPassthrough : packoffset(c2.x);
+    float gMvScaleX : packoffset(c2.y);
+    float gMvScaleY : packoffset(c2.z);
+    uint gGuideWidth : packoffset(c2.w);
+    uint gGuideHeight : packoffset(c3.x);
+    uint gCompareMode : packoffset(c3.y);
+    float gCompareSplit : packoffset(c3.z);
+    float gCompareZoom : packoffset(c3.w);
+    uint gCompareSwap : packoffset(c4.x);
+    uint gTransfer : packoffset(c4.y);
+    float gDebugScale : packoffset(c4.z);
+    uint gReversibleMode : packoffset(c4.w);
+    uint gApplyModel : packoffset(c5.x);
+    uint gReserved : packoffset(c5.y);
+    float gResidualScale : packoffset(c5.z);
+    uint gSkinProtection : packoffset(c5.w);
+    uint gShowSkinMask : packoffset(c6.x);
+    float gSkinDetail : packoffset(c6.y);
+    float gSkinColour : packoffset(c6.z);
+    float gEnvironmentDetail : packoffset(c6.w);
+    float gEnvironmentColour : packoffset(c7.x);
+    float gResidualBlendUnused : packoffset(c7.y);
+    uint gResidualHistoryValidUnused : packoffset(c7.z);
+    uint gResidualMotionBaseXUnused : packoffset(c7.w);
+    uint gResidualMotionBaseYUnused : packoffset(c8.x);
+    float gReplaceDetailStrength : packoffset(c8.y);
+    float gModelWorkScale : packoffset(c8.z);
+    float gResidualConfidenceUnused : packoffset(c8.w);
+    uint gExposureMode : packoffset(c9.x);
+    float gPreExposure : packoffset(c9.y);
+    float gExposureTrim : packoffset(c9.z);
+    float gExposureProtection : packoffset(c9.w);
+    uint gExposureAnchorCount : packoffset(c10.x);
+    uint gExposureSourceWidth : packoffset(c10.y);
+    uint gExposureSourceHeight : packoffset(c10.z);
+    uint gExposurePadding : packoffset(c10.w);
+    float4 gExposureAnchors[4] : packoffset(c11);
+    float gResidualMotionSign : packoffset(c15.x);
+    uint gResidualFrameWidth : packoffset(c15.y);
+    uint gResidualFrameHeight : packoffset(c15.z);
+    uint gResidualOutputWidth : packoffset(c15.w);
+    uint gResidualOutputHeight : packoffset(c16.x);
 };
 
 // Hue-preserving gamut compression toward the D65 neutral axis.
