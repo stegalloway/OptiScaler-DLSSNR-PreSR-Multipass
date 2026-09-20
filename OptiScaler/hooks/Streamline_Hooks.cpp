@@ -78,7 +78,7 @@ char* StreamlineHooks::trimStreamlineLog(const char* msg)
 
 void StreamlineHooks::streamlineLogCallback(sl::LogType type, const char* msg)
 {
-    if (msg == nullptr)
+    if (msg == nullptr || State::Instance().isShuttingDown)
         return;
 
     char* trimmed_msg = trimStreamlineLog(msg);
@@ -583,7 +583,7 @@ sl::Result StreamlineHooks::hkslSetD3DDevice(void* d3dDevice)
 
 void StreamlineHooks::streamlineLogCallback_sl1(sl1::LogType type, const char* msg)
 {
-    if (msg == nullptr)
+    if (msg == nullptr || State::Instance().isShuttingDown)
         return;
 
     char* trimmed_msg = trimStreamlineLog(msg);

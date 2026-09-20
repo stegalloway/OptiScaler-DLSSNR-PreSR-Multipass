@@ -164,5 +164,13 @@ template<unsigned Capacity> class DescriptorSlots
         Collect();
         return std::none_of(recordings.begin(), recordings.end(), [](const auto& r) { return r->active; });
     }
+    void FinishSubmitted()
+    {
+        std::lock_guard lock(mutex);
+        for (auto& recording : recordings)
+            if (recording->active)
+                recording->lifetime.FinishSubmitted();
+        Collect();
+    }
 };
 }

@@ -46,5 +46,8 @@ class GpuLifetime
     // All captured executions completed; recordings may still be replayable.
     bool GpuComplete();
     bool Idle();
+    // Retired owners only: completed submissions can no longer be replayed by this owner.
+    // Unsubmitted recordings and failed/removed-device fences remain unresolved.
+    void FinishSubmitted();
 };
 }

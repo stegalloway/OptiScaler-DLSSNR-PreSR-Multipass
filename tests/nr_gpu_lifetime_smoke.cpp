@@ -412,6 +412,27 @@ try
         expect(captured.expired(), "completed retirement retained its captured owner");
     }
     {
+        // Shutdown may seal completed submitted lists, but not missing submissions or live GPU work.
+        DlssNr::GpuLifetime life;
+        bool destroyed = false;
+        life.Record(commands.Get());
+        life.Retire([&] { destroyed = true; });
+        life.FinishSubmitted();
+        expect(!destroyed && !life.Idle(), "shutdown discarded an unsubmitted recording");
+        ComPtr<ID3D12Fence> blocked;
+        check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&blocked)));
+        check(queue->Wait(blocked.Get(), 1));
+        queue->ExecuteCommandLists(1, lists);
+        life.Submitted(queue.Get(), 1, lists);
+        life.FinishSubmitted();
+        expect(!destroyed && !life.Idle(), "shutdown freed GPU work before completion");
+        check(blocked->Signal(1));
+        wait();
+        expect(!life.Idle(), "ordinary collection lost replay protection");
+        life.FinishSubmitted();
+        expect(destroyed && life.Idle(), "shutdown could not reclaim the final completed recording");
+    }
+    {
         // Deliberate removal of this test's software WARP device only.
         // A completed-value sentinel or queue Signal failure must never authorize Map.
         using R = DlssNr::GpuLifetime::ReadbackState;
@@ -424,6 +445,8 @@ try
         life.Submitted(queue.Get(), 1, lists);
         wait();
         removal->RemoveDevice();
+        life.FinishSubmitted();
+        expect(!life.Idle(), "shutdown accepted a removed-device fence as GPU completion");
         life.ResetRecording(commands.Get());
         expect(readback() == R::Failed, "device removal authorized diagnostic readback");
         life.Record(commands.Get());
@@ -432,7 +455,7 @@ try
         life.ResetRecording(commands.Get());
         expect(failedSignal() == R::Failed, "failed queue signal authorized readback");
     }
-    std::puts("NR GPU lifetime smoke passed (submitted/sealed readback, replay, discard, device loss, generations)");
+    std::puts("NR GPU lifetime smoke passed (readback, replay, generations, shutdown, device loss)");
     return 0;
 }
 catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }
