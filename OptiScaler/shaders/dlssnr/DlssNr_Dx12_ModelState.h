@@ -31,6 +31,7 @@ struct ModelStateDx12
     ID3D12Resource* exposureMeter = nullptr;
     ID3D12Resource* exposure = nullptr;
     bool exposureReadable = false;
+    bool exposureValid = false; // Successful exposure production, independent of the resource state.
     unsigned exposureSource = 0;
     float exposurePreExposure = 1;
 

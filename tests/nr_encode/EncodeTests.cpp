@@ -33,7 +33,9 @@ struct OS_Dx12 { OS_Dx12(const char*,ID3D12Device*,bool,Scaler){} bool DispatchR
 struct Frame {bool ColourIsLinearHdr=true;float WhitePointOverride=0,PreExposure=1;void* ExposureTexture=nullptr;unsigned ExposureState=0;};
 struct Shader {
  int failMode=-1;
+ std::vector<unsigned> calls;
  bool DispatchPass(ID3D12GraphicsCommandList*,DlssNrConstants c,ID3D12Resource*,ID3D12Resource*,ID3D12Resource*,ID3D12Resource*,ID3D12Resource*,ID3D12Resource*a,ID3D12Resource*b) {
+  calls.push_back(c.Mode);
   if((int)c.Mode==failMode)return false;
   if(a){if(a->state!=D3D12_RESOURCE_STATE_UNORDERED_ACCESS)throw std::runtime_error("write not UAV");++a->writes;}
   if(b){if(b->state!=D3D12_RESOURCE_STATE_UNORDERED_ACCESS)throw std::runtime_error("write not UAV");++b->writes;}return true;
@@ -42,7 +44,7 @@ struct Shader {
 struct DlssNr_Dx12 { struct State {
  struct NR {
   unsigned width=64,height=64,workWidth=64,workHeight=64,heldWidth=0,heldHeight=0,exposureSource=0;
-  int heldFormat=0;bool heldActive=false,exposureReadable=false;
+  int heldFormat=0;bool heldActive=false,exposureReadable=false,exposureValid=false;
   float heldWhitePoint=1,exposurePreExposure=1;Scaler nrScaler=0;
   ID3D12Resource *heldColor=nullptr,*exposure=nullptr,*exposureMeter=nullptr,*colorCopy=nullptr,*hdrCopy=nullptr,*colorSmall=nullptr;
   OS_Dx12 *superUp=nullptr,*superDown=nullptr;
@@ -73,4 +75,5 @@ int main(){
   if(fail==DlssNrMode_Encode)Check(hdr.writes==0 && base.writes==0);
  }
  std::cout<<checks<<" production encode checks passed\n";
+ return 0;
 }

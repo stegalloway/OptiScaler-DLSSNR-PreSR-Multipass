@@ -108,6 +108,7 @@ struct DlssNr_Dx12
             ID3D12Resource* heldColor = nullptr;
             ID3D12Resource *exposure = nullptr, *exposureMeter = nullptr;
             bool exposureReadable = false;
+            bool exposureValid = false;
             unsigned exposureSource = 0;
             float exposurePreExposure = 1.0f;
             bool exposureSettingWasOn = true, heldActive = false;

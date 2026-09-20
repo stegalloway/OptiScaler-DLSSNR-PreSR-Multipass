@@ -102,7 +102,8 @@ bool DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
                            gameExposure->GetDesc().Width == 1 && gameExposure->GetDesc().Height == 1 &&
                            gameExposure->GetDesc().DepthOrArraySize == 1 &&
                            gameExposure->GetDesc().SampleDesc.Count == 1;
-    const bool exposureHeld = wasHeld && nr.heldActive && nr.exposureReadable && nr.exposureSource == source;
+    const bool exposureHeld = wasHeld && nr.heldActive && nr.exposureReadable && nr.exposureValid &&
+                              nr.exposureSource == source;
     if (exposureHeld)
     {
         context.exposure = nr.exposure;
@@ -123,6 +124,7 @@ bool DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
             if (nr.exposureReadable)
                 Barrier(cmdList, nr.exposure, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            nr.exposureValid = false; // Readable state does not prove that this attempt produced exposure.
             bool ready = false;
             if (source == 3)
             {
@@ -155,6 +157,7 @@ bool DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
             Barrier(cmdList, nr.exposure, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             nr.exposureReadable = true;
+            nr.exposureValid = ready;
             if (ready)
             {
                 context.exposure = nr.exposure;

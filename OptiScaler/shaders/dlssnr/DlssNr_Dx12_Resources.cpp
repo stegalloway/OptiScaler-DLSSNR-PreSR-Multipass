@@ -239,6 +239,7 @@ auto DlssNr_Dx12::State::ReleaseResources() -> void
     ParkNrResource(nr.exposureMeter);
     ParkNrResource(nr.exposure);
     nr.exposureReadable = false;
+    nr.exposureValid = false;
     ParkNrResource(nr.heldColor);
     nr.heldActive = false;
 
