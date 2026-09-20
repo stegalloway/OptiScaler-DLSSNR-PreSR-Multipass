@@ -3,6 +3,7 @@
 #include <d3d12.h>
 #include <functional>
 #include <memory>
+#include "DlssNr_GpuSubmission.h"
 
 namespace DlssNr
 {
@@ -12,7 +13,7 @@ namespace DlssNr
 class GpuLifetime
 {
     struct Impl;
-    std::unique_ptr<Impl> impl;
+    std::shared_ptr<Impl> impl;
 
   public:
     GpuLifetime();
@@ -29,15 +30,21 @@ class GpuLifetime
     // Like CompletionProbe, this tracker must outlive calls to the probe.
     std::function<ReadbackState()> ReadbackProbe(ID3D12GraphicsCommandList* commands);
     // One reusable monotonic fence per queue; aliases are normalized at every notification.
-    // Only call after the real ExecuteCommandLists or a successful command-list Reset.
+    // Capture before the real ExecuteCommandLists; complete after it, including on replay.
+    GpuSubmission BeginSubmission(UINT count, ID3D12CommandList* const* lists);
+    // Convenience for callers which already serialize Execute and Reset themselves.
     void Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
     void ResetRecording(ID3D12CommandList* commands);
+    // The caller supplies a live object, never a stored identity that may be destroyed.
+    bool HasOpenRecording(ID3D12CommandList* commands);
     // Start tracking a replacement resource set. Older recordings still receive submit/reset
     // notifications, but only recordings used again belong to the new generation.
     void BeginGeneration();
     // Unresolved callbacks, including their captured ownership, are retained at destruction.
     void Retire(std::function<void()> destroy);
     void Collect();
+    // All captured executions completed; recordings may still be replayable.
+    bool GpuComplete();
     bool Idle();
 };
 }

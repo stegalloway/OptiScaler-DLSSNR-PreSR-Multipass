@@ -74,6 +74,8 @@ class FrameCapture
     bool isActive() const { return wanted_ != 0; }
     void Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
     { lifetime_.Submitted(queue, count, lists); }
+    DlssNr::GpuSubmission BeginSubmission(UINT count, ID3D12CommandList* const* lists)
+    { return lifetime_.BeginSubmission(count, lists); }
     void ResetRecording(ID3D12CommandList* commands) { lifetime_.ResetRecording(commands); }
 
     void record(ID3D12GraphicsCommandList* cmd, ID3D12Device* device, ID3D12Resource* before,

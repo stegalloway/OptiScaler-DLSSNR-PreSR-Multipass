@@ -19,6 +19,7 @@
 
 #include "DlssNr_Common.h"
 #include <dlssnr/DlssNrFeature_Dx12.h>
+#include <dlssnr/DlssNr_DescriptorSlots.h>
 #include <memory>
 
 #include <d3d12.h>
@@ -26,8 +27,8 @@
 #include <shaders/Shader_Dx12.h>
 #include <shaders/Shader_Dx12Utils.h>
 
-// Twelve-frame descriptor budget, including two clamp bindings and two DLSS enlargement passes.
-// A model chain reuses those two bindings regardless of its pass count.
+// Bounded descriptor capacity; actual recording/fence completion controls reuse.
+// A model chain reuses its two immutable clamp bindings regardless of pass count.
 #define DLSSNR_NUM_OF_HEAPS 96
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
@@ -45,7 +46,7 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // encode and downsample would run with the resolve's parameters.
     ID3D12Resource* _constantBuffers[DLSSNR_NUM_OF_HEAPS] = {};
 
-    uint32_t _heapIndex = 0;
+    DlssNr::DescriptorSlots<DLSSNR_NUM_OF_HEAPS> _descriptorSlots;
 
     // The shader reads five inputs and writes two, and not every mode uses all of them. Unused slots
     // still need a view bound -- an unbound descriptor is not an empty read, it is a read from
@@ -102,6 +103,7 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
                      bool interop = false, uint32_t featureFlags = 0);
     void ResetFinishedCommands(ID3D12CommandList* cmd);
     void SubmitFinishedCommands(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
+    DlssNr::GpuSubmission BeginFinishedCommands(UINT count, ID3D12CommandList* const* lists);
     bool WaitFinished();
     void ApplyFinished(ID3D12Resource* picture, ID3D12CommandQueue* queue, DXGI_COLOR_SPACE_TYPE space,
                        bool gameFrameHandoff = false);

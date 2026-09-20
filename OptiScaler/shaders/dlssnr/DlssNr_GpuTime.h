@@ -1,4 +1,6 @@
 #pragma once
+#include <dlssnr/DlssNr_GpuLifetime.h>
+#include <vector>
 
 // NR calls are serialized by g_nrMutex, including submission/reset notifications.
 // Associate every query pair with its actual submitting queue and GPU completion.
@@ -7,15 +9,16 @@ class DlssNrGpuTime
     using Resource = Microsoft::WRL::ComPtr<ID3D12Resource>;
     struct Sample
     {
-        Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+        DlssNr::GpuLifetime lifetime;
         ID3D12CommandList* commands = nullptr; // identity only
-        UINT64 value = 0, frequency = 0, sequence = 0;
-        bool occupied = false, ended = false, submitted = false;
+        UINT64 frequency = 0, sequence = 0;
+        bool occupied = false, ended = false, submitted = false, readBack = false;
     };
     static constexpr unsigned Count = 8;
     Microsoft::WRL::ComPtr<ID3D12QueryHeap> queries;
     Resource readback;
-    std::array<Sample, Count> samples;
+    using Samples = std::array<Sample, Count>;
+    std::shared_ptr<Samples> samples = std::make_shared<Samples>();
     int recording = -1;
     UINT64 sequence = 0, lastSequence = 0;
     std::optional<double> last;
@@ -24,24 +27,29 @@ class DlssNrGpuTime
     {
         for (unsigned i = 0; i < Count; ++i)
         {
-            auto& s = samples[i];
-            if (!s.occupied || !s.submitted) continue;
-            const auto completed = s.fence->GetCompletedValue();
-            if (completed == UINT64_MAX || completed < s.value) continue;
-            UINT64* data = nullptr;
-            D3D12_RANGE range { i * 2 * sizeof(UINT64), (i * 2 + 2) * sizeof(UINT64) };
-            if (SUCCEEDED(readback->Map(0, &range, (void**) &data)))
+            auto& s = (*samples)[i];
+            if (!s.occupied || !s.lifetime.GpuComplete()) continue;
+            const bool reusable = s.lifetime.Idle();
+            if (!s.submitted && !reusable) continue;
+            if (!s.submitted) { s.occupied = false; continue; }
+            if (!s.readBack)
             {
-                const auto begin = data[i * 2], end = data[i * 2 + 1];
-                if (s.sequence > lastSequence && s.frequency && begin && end >= begin)
+                UINT64* data = nullptr;
+                D3D12_RANGE range { i * 2 * sizeof(UINT64), (i * 2 + 2) * sizeof(UINT64) };
+                if (SUCCEEDED(readback->Map(0, &range, (void**) &data)))
                 {
-                    last = double(end - begin) * 1000.0 / double(s.frequency);
-                    lastSequence = s.sequence;
+                    const auto begin = data[i * 2], end = data[i * 2 + 1];
+                    if (s.sequence > lastSequence && s.frequency && begin && end >= begin)
+                    {
+                        last = double(end - begin) * 1000.0 / double(s.frequency);
+                        lastSequence = s.sequence;
+                    }
+                    D3D12_RANGE written { 0, 0 };
+                    readback->Unmap(0, &written);
+                    s.readBack = true;
                 }
-                D3D12_RANGE written { 0, 0 };
-                readback->Unmap(0, &written);
             }
-            s.occupied = false;
+            s.occupied = !reusable;
         }
     }
 
@@ -54,9 +62,14 @@ class DlssNrGpuTime
         const auto desc = CD3DX12_RESOURCE_DESC::Buffer(Count * 2 * sizeof(UINT64));
         if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback)))) return;
-        for (auto& s : samples)
-            if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&s.fence))))
-            { readback.Reset(); return; }
+    }
+
+    ~DlssNrGpuTime()
+    {
+        // A recorded/replayable list still borrows this storage, even if the
+        // timing owner is retired. Failed/abandoned submissions are quarantined.
+        for (auto& s : *samples)
+            if (!s.lifetime.Idle()) { queries.Detach(); readback.Detach(); break; }
     }
 
     void Start(ID3D12GraphicsCommandList* cmd)
@@ -66,15 +79,15 @@ class DlssNrGpuTime
         Collect();
         for (unsigned i = 0; i < Count; ++i)
         {
-            auto& s = samples[i];
+            auto& s = (*samples)[i];
             if (s.occupied) continue;
             s.commands = cmd;
             ID3D12GraphicsCommandList* real = nullptr;
             if (Util::CheckForRealObject(__FUNCTION__, cmd, (IUnknown**) &real)) s.commands = real;
             s.occupied = true;
-            s.ended = s.submitted = false;
+            s.ended = s.submitted = s.readBack = false;
             s.sequence = ++sequence;
-            ++s.value;
+            s.lifetime.Record(cmd);
             recording = (int) i;
             cmd->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, i * 2);
             break;
@@ -88,32 +101,50 @@ class DlssNrGpuTime
         cmd->EndQuery(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, i * 2 + 1);
         cmd->ResolveQueryData(queries.Get(), D3D12_QUERY_TYPE_TIMESTAMP, i * 2, 2,
                              readback.Get(), i * 2 * sizeof(UINT64));
-        samples[i].ended = true;
+        (*samples)[i].ended = true;
         recording = -1;
+    }
+
+    DlssNr::GpuSubmission BeginSubmission(UINT count, ID3D12CommandList* const* lists)
+    {
+        struct Pending { unsigned index; DlssNr::GpuSubmission submission; };
+        std::shared_ptr<std::vector<Pending>> pending;
+        for (unsigned i = 0; i < Count; ++i)
+        {
+            auto& s = (*samples)[i];
+            if (!s.occupied) continue;
+            auto submission = s.lifetime.BeginSubmission(count, lists);
+            if (submission)
+            {
+                // Replay writes the same query pair again. Read it once after
+                // all captured executions finish, while preserving display order.
+                s.readBack = false;
+                if (!pending) pending = std::make_shared<std::vector<Pending>>();
+                pending->push_back({ i, std::move(submission) });
+            }
+        }
+        if (!pending) return {};
+        return DlssNr::GpuSubmission([storage = samples, pending](ID3D12CommandQueue* queue)
+        {
+            for (auto& item : *pending)
+            {
+                auto& s = (*storage)[item.index];
+                s.submitted = true;
+                if (!queue || !s.ended || FAILED(queue->GetTimestampFrequency(&s.frequency))) s.frequency = 0;
+                item.submission.Complete(queue);
+            }
+        });
     }
 
     void Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
     {
-        for (auto& s : samples)
-        {
-            if (!s.occupied || !s.ended || s.submitted) continue;
-            for (UINT i = 0; i < count; ++i)
-                if (lists[i] == s.commands)
-                {
-                    if (FAILED(queue->GetTimestampFrequency(&s.frequency))) s.frequency = 0;
-                    // Executed after the real ExecuteCommandLists: protects query readback AND reuse.
-                    // A failed signal must quarantine an executed slot, not make it look discarded.
-                    s.submitted = true;
-                    if (FAILED(queue->Signal(s.fence.Get(), s.value))) s.frequency = 0;
-                    break;
-                }
-        }
+        BeginSubmission(count, lists).Complete(queue);
     }
 
     void ResetRecording(ID3D12CommandList* cmd)
     {
-        for (auto& s : samples)
-            if (s.occupied && !s.submitted && s.commands == cmd) s.occupied = false;
+        for (auto& s : *samples)
+            if (s.occupied) s.lifetime.ResetRecording(cmd);
     }
 
     void ClearLast()

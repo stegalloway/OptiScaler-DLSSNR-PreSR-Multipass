@@ -11,14 +11,19 @@ void DlssNr_Dx12::State::ReleaseEnlarger()
 void DlssNr_Dx12::State::CollectEnlargers()
 {
     if (collectingEnlargers) return;
-    collectingEnlargers = true;
+    struct CollectionScope
+    {
+        bool& active;
+        explicit CollectionScope(bool& value) : active(value) { active = true; }
+        ~CollectionScope() { active = false; }
+    } scope(collectingEnlargers);
     // Release NGX only after container mutation: its destruction can re-enter queue hooks.
     std::vector<std::unique_ptr<Enlarger>> completed;
+    completed.reserve(retiredEnlargers.size()); // Allocation failure must precede moving any ownership.
     for (auto& old : retiredEnlargers)
-        if (old->lifetime.Idle()) completed.push_back(std::move(old));
+        if (!old->pendingSubmissions && old->lifetime.Idle()) completed.push_back(std::move(old));
     std::erase_if(retiredEnlargers, [](const auto& old) { return !old; });
     completed.clear();
-    collectingEnlargers = false;
 }
 
 ID3D12Resource* DlssNr_Dx12::State::EnlargeMatchedResidual(ID3D12GraphicsCommandList* cmd,

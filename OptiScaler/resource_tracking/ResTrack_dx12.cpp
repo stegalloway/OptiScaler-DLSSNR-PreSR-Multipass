@@ -735,8 +735,10 @@ void ResTrack_Dx12::hkCreateUnorderedAccessView(ID3D12Device* This, ID3D12Resour
 
 static void STDMETHODCALLTYPE hkNrExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {
+    auto nrSubmission = DlssNr::BeginFinishedPictureSubmission(count, lists);
     o_ExecuteCommandLists(queue, count, lists);
-    DlssNr::FinishedPictureSubmitted(queue, count, lists);
+    if (!nrSubmission.CompleteNoThrow(queue))
+        LOG_ERROR("DLSS-NR submission bookkeeping failed after ExecuteCommandLists; affected ownership remains quarantined");
 }
 
 #pragma region Heap hooks

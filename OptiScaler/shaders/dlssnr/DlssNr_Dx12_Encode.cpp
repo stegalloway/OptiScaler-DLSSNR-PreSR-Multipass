@@ -11,6 +11,8 @@ bool DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
     auto& targetState = context.targetState;
     auto& whitePoint = context.whitePoint;
     auto& modelInput = context.modelInput;
+    modelInput = nullptr;
+    const auto initialTargetState = targetState;
     const auto width = nr.width, height = nr.height;
     const auto workWidth = nr.workWidth, workHeight = nr.workHeight;
     const auto workScale = context.workScale;
@@ -176,7 +178,10 @@ bool DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
     // Do not expose stale scratch content to the model or NRSTAB after a rejected dispatch.
     if (!shader.DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, context.exposure, nullptr,
                              nr.colorCopy, nr.hdrCopy))
-        return false; // Both scratch surfaces remain UAV; caller restores the game target.
+    {
+        TransitionTarget(initialTargetState);
+        return false; // Both scratch surfaces remain UAV.
+    }
 
     if (targetSupportsUav)
         TransitionTarget(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -245,10 +250,13 @@ bool DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
             if (!shader.DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr, nr.colorSmall,
                                      nullptr))
             {
+                // Only the successful encode made these copies readable. The
+                // failed resample left colorSmall in its original UAV state.
                 Barrier(cmdList, nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                TransitionTarget(initialTargetState);
                 modelInput = nullptr;
                 return false;
             }
