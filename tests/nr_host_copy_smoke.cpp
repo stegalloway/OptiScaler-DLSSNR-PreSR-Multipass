@@ -81,7 +81,6 @@ void testHostCopies(ID3D12Device* device, unsigned route, unsigned outcome)
  expect(compositionSucceeded==resolved,"composition result changed");
  Barrier(cmdList,game.Get(),outputArrival,D3D12_RESOURCE_STATE_COPY_SOURCE);
  for(unsigned mip=0;mip<1;++mip){
-  
   auto src=location(game.Get()),dst=location(final.Get());src.SubresourceIndex=mip;dst.Type=D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;dst.PlacedFootprint=fp[mip];cmdList->CopyTextureRegion(&dst,0,0,0,&src,nullptr);
  }
  check(cmdList->Close());ID3D12CommandList*lists[]{cmdList};queue->ExecuteCommandLists(1,lists);

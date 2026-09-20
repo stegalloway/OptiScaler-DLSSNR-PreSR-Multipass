@@ -162,4 +162,3 @@ int main()try {
  printf("PASS: %u production RenderMenu assertions; pre/post x four subpanels, inactive explanations, A/B, knobs, defaults\n",Test::checks);
  return 0;
 }catch(const std::exception&e){fprintf(stderr,"FAIL: %s\n",e.what());return 1;}
-

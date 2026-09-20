@@ -30,4 +30,3 @@ No game installation or promotion. This is a generic DX12/bridge NRSTAB candidat
 
 Use the same scene, FG mode/multiplier, NR placement/model/settings and camera movement as the accepted untouched v0.8.5 control. Preserve existing INI; do not silently reset the user's 1.75-pixel gate. NRSTAB defaults if absent are enabled, K=1, gate=2px; ShadowFloor=0.
 Verify controls visible, log integration=V085_NRSTAB_SHADOWFLOOR_DX12, startup WAIT_MOTION/READBACK to PATH READY/ACTIVE, then NRSTAB off/on while holding other settings fixed. Test ShadowFloor separately from zero. Quality-mode Q/P/Q must reset history and retain only compatible MV convention. Stop on smearing, instability, device removal or excessive VRAM growth and restore the separately backed-up game DLL.
-
