@@ -116,6 +116,14 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
         o_logCallback = localPref.logMessageCallback;
     localPref.logLevel = sl::LogLevel::eCount;
     localPref.logMessageCallback = &streamlineLogCallback;
+#if defined(OPTISCALER_RTX40_MFG)
+    // Preserve the caller's preferences; only allow already-downloaded plugins for Ada MFG.
+    if (Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default())
+    {
+        localPref.flags |= sl::PreferenceFlags::eLoadDownloadedPlugins;
+        LOG_INFO("RTX40 MFG: downloaded Streamline plugins allowed at initialization");
+    }
+#endif
 
     // renderAPI is optional so need to be careful, should only matter for Vulkan
     renderApi = localPref.renderAPI;
