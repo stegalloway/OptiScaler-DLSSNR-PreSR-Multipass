@@ -1,4 +1,5 @@
 #pragma once
+#include <dlssnr/DlssNr_GpuLifetime.h>
 #include <dlssnr/DlssNr_Proxy.h>
 #include <dlssnr/PassProfiles.h>
 #include <dlssnr/DlssNrFeature_Dx12.h>
@@ -47,6 +48,43 @@ struct ModelStateDx12
     ID3D12Resource* outputNative = nullptr;
     OS_Dx12* superDown = nullptr;
     Scaler nrScaler = Scaler::Count;
+
+    // NRSTAB steady-state GPU history and startup-only MV convention diagnostic.
+    ID3D12Resource* stabResolved = nullptr;
+    ID3D12Resource* stabHistory[2] = {};
+    bool stabHistoryReadable[2] = {};
+    unsigned int stabHistoryIndex = 0;
+    bool stabHistoryValid = false;
+    ID3D12Resource* stabPrevBase = nullptr;
+    bool stabPrevBaseReadable = false;
+    bool stabPrevBaseValid = false;
+    ID3D12Resource* stabMvDiag = nullptr;
+    ID3D12Resource* stabMvReadback = nullptr;
+    std::function<DlssNr::GpuLifetime::ReadbackState()> stabMvCompletion;
+    bool stabMvReadbackPending = false;
+    bool stabMvIgnorePending = false;
+    unsigned long long stabMvReadbackFrame = 0;
+    unsigned int stabMvAttempts = 0;
+    unsigned int stabMvMovingFrames = 0;
+    bool stabMvSelfTestPassed = false;
+    bool stabMvSelfTestFailed = false;
+    float stabMvSign = 0.0f;
+    float stabMvErrUnwarped = 0.0f, stabMvErrPlus = 0.0f, stabMvErrMinus = 0.0f;
+    unsigned int stabMvValidSamples = 0;
+    unsigned long long stabMvAccumSamples = 0;
+    double stabMvAccumUnwarped = 0.0, stabMvAccumPlus = 0.0, stabMvAccumMinus = 0.0;
+    unsigned long long stabSelectorFrames = 0, stabWarmHistoryFrames = 0, stabFallbackFrames = 0;
+    unsigned long long stabSelfTestWaitFrames = 0, stabMvSelfTestDispatches = 0;
+    bool stabSelfTestEverCalled = false, stabSelfTestWaitingMotion = true, stabSelfTestWaitWarned = false;
+    ULONGLONG stabLastStatusTick = 0;
+    bool stabAnnounced = false, stabPathReady = false, stabFailureLogged = false;
+    bool stabControlInitialized = false, stabAppliedEnabled = true;
+    float stabAppliedK = 1.0f, stabAppliedMotionRejectPx = 2.0f;
+    bool stabPlacementInitialized = false;
+    bool stabBeforeUpscale = false;
+    // Diagnostic notices are per NR owner; do not reset them every frame.
+    bool stabSessionCacheConflictLogged = false;
+    bool stabSessionCacheEncodingMissLogged = false;
 
     // Frame hold (design/frame-hold.md): a persistent copy of the output taken on hold-on and restored
     // over the live output before the encode reads it while held, so a setting change re-renders the

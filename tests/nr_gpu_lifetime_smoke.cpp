@@ -69,6 +69,45 @@ try
         expect(!completed(), "unrelated submission revived discarded creation");
         check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate)));
     }
+    // NRSTAB readback: exact recording, sealed against replay, actual fence completion.
+    // No frame/presentation epoch appears in this production API.
+    {
+        using R = DlssNr::GpuLifetime::ReadbackState;
+        DlssNr::GpuLifetime life;
+        life.Record(commands.Get());
+        auto discarded = life.ReadbackProbe(commands.Get());
+        for (int frame = 0; frame < 100; ++frame)
+            expect(discarded() == R::Pending, "CPU frames authorized an unsubmitted readback");
+        life.ResetRecording(commands.Get());
+        expect(discarded() == R::Discarded, "discarded readback was not invalidated");
+        life.Record(commands.Get());
+        auto completed = life.ReadbackProbe(commands.Get());
+        check(queue->Wait(gate.Get(), 200));
+        queue->ExecuteCommandLists(1, lists);
+        life.Submitted(queue.Get(), 1, lists);
+        for (int frame = 0; frame < 100; ++frame)
+            expect(completed() == R::Pending, "delayed GPU readback authorized by CPU progress");
+        check(gate->Signal(200));
+        wait();
+        expect(completed() == R::Pending, "replayable recording authorized CPU readback");
+        // A replay gets a new queue fence value: the earlier completion is insufficient.
+        check(queue->Wait(gate.Get(), 201));
+        queue->ExecuteCommandLists(1, lists);
+        life.Submitted(queue.Get(), 1, lists);
+        life.ResetRecording(commands.Get());
+        expect(completed() == R::Pending, "earlier fence authorized pending replay readback");
+        check(gate->Signal(201));
+        wait();
+        life.Collect();
+        expect(completed() == R::Complete, "sealed completed readback requires no presentation progress");
+        life.Record(commands.Get());
+        auto reused = life.ReadbackProbe(commands.Get());
+        expect(reused() == R::Pending, "old fence authorized reused command-list address");
+        expect(discarded() == R::Discarded, "new recording revived discarded diagnostic");
+        life.ResetRecording(commands.Get());
+        expect(reused() == R::Discarded, "unsubmitted reuse was not discarded");
+        check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate)));
+    }
     int released = 0;
     {
         DlssNr::GpuLifetime life;
@@ -372,7 +411,28 @@ try
         completed.Retire([owner = std::move(owner)] {});
         expect(captured.expired(), "completed retirement retained its captured owner");
     }
-    std::puts("NR GPU lifetime smoke passed (including dormant and shared model generations)");
+    {
+        // Deliberate removal of this test's software WARP device only.
+        // A completed-value sentinel or queue Signal failure must never authorize Map.
+        using R = DlssNr::GpuLifetime::ReadbackState;
+        ComPtr<ID3D12Device5> removal;
+        check(device.As(&removal));
+        DlssNr::GpuLifetime life;
+        life.Record(commands.Get());
+        auto readback = life.ReadbackProbe(commands.Get());
+        queue->ExecuteCommandLists(1, lists);
+        life.Submitted(queue.Get(), 1, lists);
+        wait();
+        removal->RemoveDevice();
+        life.ResetRecording(commands.Get());
+        expect(readback() == R::Failed, "device removal authorized diagnostic readback");
+        life.Record(commands.Get());
+        auto failedSignal = life.ReadbackProbe(commands.Get());
+        life.Submitted(queue.Get(), 1, lists);
+        life.ResetRecording(commands.Get());
+        expect(failedSignal() == R::Failed, "failed queue signal authorized readback");
+    }
+    std::puts("NR GPU lifetime smoke passed (submitted/sealed readback, replay, discard, device loss, generations)");
     return 0;
 }
 catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }

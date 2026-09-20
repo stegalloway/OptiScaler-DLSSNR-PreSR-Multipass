@@ -196,6 +196,18 @@ try
                              run(target.shader, makeSettings(composed, 2.0f, 0.5f))),
                    "a Composed mode reached the detail injection");
 
+        // Main composition alias is ResidualBlend, not the live motion-scale fields.
+        auto floorSettings=makeSettings(0,0.0f,1.0f);
+        floorSettings.ColourStrength=0; floorSettings.MaxRatio=4;
+        const auto stock=run(target.shader,floorSettings);
+        floorSettings.ResidualBlend=0.9f;
+        const auto raised=run(target.shader,floorSettings);
+        expect(luma(at(raised,7,4)) >= 0.8f*0.899f &&
+               luma(at(raised,7,4)) > luma(at(stock,7,4)),
+               "ordinary ShadowFloor did not raise only the darkening bound");
+        expect(closeTo(luma(at(raised,2,4)),luma(at(stock,2,4)),0.0001f),
+               "ShadowFloor altered the brightening side");
+
         // On: model ran at half size (radius 2). Flat area, dark side of the edge, bright side of the edge.
         const auto on = run(target.shader, makeSettings(2, 1.0f, 0.5f));
         for (const Pixel& p : on)

@@ -7,6 +7,7 @@
 #include "DlssNr_Upscaler.h"
 #include "DlssNr_MenuSections.h"
 #include "DlssNr_Placement.h"
+#include "DlssNr_NrStabStatus.h"
 #include <Config.h>
 #include <menu/menu_common.h>
 #include <algorithm>
@@ -43,6 +44,56 @@ static void RenderPlacement(Config* config)
             : "The game processes clean input through SR/RR. The separately upscaled NR edit is applied after upscale.");
     }
 
+}
+
+
+// Kept outside the selected sub-panel and finished-picture branch so the
+// controls remain discoverable even when the current route cannot run NRSTAB.
+static void RenderStabilizer(Config* config, bool nativeVulkan)
+{
+    ImGui::SeparatorText("NRSTAB - temporal NR stabilizer (experimental)");
+    bool enabled = config->DlssNrStabilizerEnabled.value_or_default();
+    if (ImGui::Checkbox("Stabilization active", &enabled))
+        config->DlssNrStabilizerEnabled = enabled;
+    HelpMarker("Live A/B switch: off uses raw NR; on arms the motion-direction self-test before stabilizing. "
+               "Changing these controls resets temporal history, not the validated motion convention.");
+    ImGui::BeginDisabled(!enabled);
+    float k = std::clamp(config->DlssNrStabilizerK.value_or_default(), 0.50f, 1.50f);
+    if (ImGui::SliderFloat("Residual confidence K", &k, 0.50f, 1.50f, "%.2f"))
+        config->DlssNrStabilizerK = std::clamp(k, 0.50f, 1.50f);
+    float motion = std::clamp(config->DlssNrStabilizerMotionRejectPx.value_or_default(), 0.50f, 3.00f);
+    if (ImGui::SliderFloat("Motion rejection (output px)", &motion, 0.50f, 3.00f, "%.2f px"))
+        config->DlssNrStabilizerMotionRejectPx = std::clamp(motion, 0.50f, 3.00f);
+    if (ImGui::SmallButton("Reset stabilizer defaults"))
+    {
+        config->DlssNrStabilizerK = 1.0f;
+        config->DlssNrStabilizerMotionRejectPx = 2.0f;
+    }
+    ImGui::EndDisabled();
+
+    // Configuration/route overrides prevent a last-known ACTIVE status from
+    // masquerading as current activity after switching to an unsupported route.
+    if (!config->DlssNrEnabled.value_or_default())
+        ImGui::TextDisabled("NRSTAB inactive: NR off.");
+    else if (!enabled)
+        ImGui::TextDisabled("NRSTAB BYPASSED - raw NR.");
+    else if (nativeVulkan)
+        ImGui::TextWrapped("NRSTAB unavailable on native Vulkan; requires DirectX 12 or its bridge.");
+    else if (config->DlssNrFinishedPicture.value_or_default() ||
+             config->DlssNrDeferredDlss.value_or_default() || config->DlssNrResidualAcrossRr.value_or_default())
+        ImGui::TextWrapped("NRSTAB unavailable for finished-picture or separate/private-upscale routes. Use ordinary pre- or post-upscale NR.");
+    else if (!config->DlssNrApplyModel.value_or_default() ||
+             config->DlssNrDebugView.value_or_default() || config->DlssNrCompare.value_or_default())
+        ImGui::TextWrapped("NRSTAB inactive while the model edit is hidden or NR inspection/comparison is enabled.");
+    else
+    {
+        ImGui::Text("NRSTAB last runtime state: %s", NrStabUi::StateName());
+        ImGui::Text("MV direction: %+d | History: %s | Motion to output: %.3fx %.3fy",
+                    NrStabUi::mvDirection.load(),
+                    NrStabUi::historyValid.load() ? "valid" : "cold",
+                    NrStabUi::motionScaleX.load(), NrStabUi::motionScaleY.load());
+        HelpMarker("Runtime status is diagnostic evidence, not proof of image quality. WAIT_MOTION needs camera movement.");
+    }
 }
 
 static void RenderStatus(Config* config)
@@ -232,6 +283,7 @@ void RenderMenu(Config* config, float menuResScale)
         ImGui::Separator();
         ImGui::Spacing();
         RenderStatus(config);
+        RenderStabilizer(config, nativePrivateVk);
         ImGui::SeparatorText(PipelineUi::SectionName(selected));
         ImGui::PushItemWidth(std::min(220.0f * menuResScale, ImGui::GetContentRegionAvail().x * 0.42f));
         static constexpr void (*sections[])(Config*) = { RenderPlacement, RenderInput, RenderModel, RenderBlend };

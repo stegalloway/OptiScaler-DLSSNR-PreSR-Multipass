@@ -1,7 +1,7 @@
 #include "pch.h"
 #include "DlssNr_Dx12_State.h"
 
-void DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
+bool DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
 {
     const auto& cfg = *Config::Instance();
     const auto& frame = context.frame;
@@ -173,8 +173,10 @@ void DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
     encodeParams.Height = height;
 
     TransitionTarget(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    shader.DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, context.exposure, nullptr, nr.colorCopy,
-                        nr.hdrCopy);
+    // Do not expose stale scratch content to the model or NRSTAB after a rejected dispatch.
+    if (!shader.DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, context.exposure, nullptr,
+                             nr.colorCopy, nr.hdrCopy))
+        return false; // Both scratch surfaces remain UAV; caller restores the game target.
 
     if (targetSupportsUav)
         TransitionTarget(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -240,8 +242,16 @@ void DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
             down.Mode = DlssNrMode_Downsample;
             down.Width = workWidth;
             down.Height = workHeight;
-            shader.DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr, nr.colorSmall,
-                                nullptr);
+            if (!shader.DispatchPass(cmdList, down, modelInput, nullptr, nullptr, nullptr, nullptr, nr.colorSmall,
+                                     nullptr))
+            {
+                Barrier(cmdList, nr.colorCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                Barrier(cmdList, nr.hdrCopy, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                modelInput = nullptr;
+                return false;
+            }
             Barrier(cmdList, nr.colorSmall, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         }
@@ -249,6 +259,7 @@ void DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
         modelInput = nr.colorSmall;
     }
 
+    return true;
 }
 
 DlssNrConstants DlssNr_Dx12::State::MakeResolveConstants(const EncodeContext& context, unsigned int effectivePasses)
@@ -273,6 +284,7 @@ DlssNrConstants DlssNr_Dx12::State::MakeResolveConstants(const EncodeContext& co
     resolveParams.ColourStrength = cfg.DlssNrColourStrength.value_or_default();
     resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
     resolveParams.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
+    resolveParams.ResidualBlend = std::clamp(cfg.DlssNrShadowFloor.value_or_default(), 0.0f, 1.0f); // gShadowFloor alias
     resolveParams.Transfer = std::min(cfg.DlssNrTransfer.value_or_default(), 1u);
     resolveParams.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
     resolveParams.Passthrough = isHdrBuffer ? 0u : 1u;

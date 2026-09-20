@@ -105,6 +105,9 @@ float3 SanitizeFinite3(float3 v, float3 fallback)
                   SanitizeFinite(v.z, fallback.z));
 }
 
+float EditScalar(float3 d) { return (d.x + d.y + d.z) * (1.0 / 3.0); }
+float EditMagnitude(float3 d) { d = abs(d); return (d.x + d.y + d.z) * (1.0 / 3.0); }
+
 [numthreads(8, 8, 1)]
 void CSMain(uint3 id : SV_DispatchThreadID)
 {
@@ -146,6 +149,106 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float3 delta = SanitizeFinite3(gModel.SampleLevel(gLinear, uv, 0).rgb, float3(0.0, 0.0, 0.0));
 
         gTarget[id.xy] = float4(max(base.rgb + delta * gTransferStrength, 0.0), base.a);
+        return;
+    }
+
+    if (gMode == 2)
+    {
+        float3 delta = SanitizeFinite3(gModel.Load(int3(id.xy,0)).rgb - gSource.Load(int3(id.xy,0)).rgb,float3(0.0,0.0,0.0));
+        const bool interior = id.x > 0 && id.y > 0 && id.x + 1 < gWidth && id.y + 1 < gHeight;
+
+        float sum = 0.0, sum2 = 0.0;
+        [unroll] for (int oy=-1; oy<=1; ++oy)
+        [unroll] for (int ox=-1; ox<=1; ++ox)
+        {
+            int2 p = clamp(int2(id.xy)+int2(ox,oy),int2(0,0),int2((int)gWidth-1,(int)gHeight-1));
+            float3 d = SanitizeFinite3(gModel.Load(int3(p,0)).rgb - gSource.Load(int3(p,0)).rgb,float3(0.0,0.0,0.0));
+            float s = EditScalar(d); sum += s; sum2 += s*s;
+        }
+        float mean = sum / 9.0;
+        float sigma = sqrt(max(sum2 / 9.0 - mean*mean,0.0));
+
+        bool guideOk = gGuideWidth != 0 && gGuideHeight != 0;
+        float2 uv = (float2(id.xy) + 0.5) / float2(gWidth,gHeight);
+        float2 motion = float2(0.0,0.0);
+        float2 prevUV = uv;
+        bool motionFinite = false;
+        float maxMotionDisagreementPx = 1e20;
+        if (guideOk)
+        {
+            uint2 gs = uint2(gGuideWidth,gGuideHeight);
+            uint2 gp = min(uint2(uv * gs),gs - 1) + uint2(gResidualMotionBaseX,gResidualMotionBaseY);
+            motion = gMotion.Load(int3(gp,0)).xy * float2(gMvScaleX,gMvScaleY) * gResidualMotionSign;
+            prevUV = uv + motion;
+            motionFinite = all(isfinite(motion));
+            float2 motionPxExtent = float2(
+                gResidualOutputWidth != 0 ? gResidualOutputWidth : gWidth,
+                gResidualOutputHeight != 0 ? gResidualOutputHeight : gHeight);
+            float2 centerPx = motion * motionPxExtent;
+            maxMotionDisagreementPx = 0.0;
+            [unroll] for (int my=-1; my<=1; ++my)
+            [unroll] for (int mx=-1; mx<=1; ++mx)
+            {
+                int2 op = clamp(int2(id.xy)+int2(mx,my),int2(0,0),int2((int)gWidth-1,(int)gHeight-1));
+                float2 ouv = (float2(op)+0.5) / float2(gWidth,gHeight);
+                uint2 ogp = min(uint2(ouv * gs),gs - 1) + uint2(gResidualMotionBaseX,gResidualMotionBaseY);
+                float2 om = gMotion.Load(int3(ogp,0)).xy * float2(gMvScaleX,gMvScaleY) * gResidualMotionSign;
+                if (!all(isfinite(om))) maxMotionDisagreementPx = 1e20;
+                else maxMotionDisagreementPx = max(maxMotionDisagreementPx,length(om * motionPxExtent - centerPx));
+            }
+        }
+
+        bool reprojectionValid = gResidualHistoryValid != 0 && interior && guideOk && motionFinite &&
+                                 all(prevUV >= 0.0) && all(prevUV <= 1.0);
+        bool motionStable = reprojectionValid && maxMotionDisagreementPx <= max(gMaxRatio,0.0);
+        float3 history = reprojectionValid ? SanitizeFinite3(gOriginal.SampleLevel(gLinear,prevUV,0).rgb,float3(0.0,0.0,0.0)) : delta;
+        float k = max(gResidualBlend,0.0);
+        bool acceptHistory = motionStable && abs(EditScalar(history) - mean) <= k * max(sigma,1e-6);
+
+        // Core invariant: binary selection only. Never alpha-blend current and history.
+        float3 chosen = acceptHistory ? history : delta;
+        float3 base = gSource.Load(int3(id.xy,0)).rgb;
+        float3 visibleChosen = max(base + chosen,0.0) - base;
+        gTarget[id.xy] = float4(visibleChosen,1.0);
+        return;
+    }
+
+    // Startup MV convention validation. gWidth/gHeight are the 64x64 diagnostic grid;
+    // gResidualFrameWidth/Height are the real frame dimensions. Each cell compares current clean SR
+    // with previous clean SR unwarped and at both possible MV signs. Alpha=1 marks a useful moving sample.
+    if (gMode == 3)
+    {
+        if (gResidualFrameWidth == 0 || gResidualFrameHeight == 0 || gGuideWidth == 0 || gGuideHeight == 0)
+        {
+            gTarget[id.xy] = float4(0.0,0.0,0.0,0.0);
+            return;
+        }
+        float2 gridUv = (float2(id.xy) + 0.5) / float2(gWidth,gHeight);
+        uint2 frameSize = uint2(gResidualFrameWidth,gResidualFrameHeight);
+        uint2 outputSize = uint2(
+            gResidualOutputWidth != 0 ? gResidualOutputWidth : gResidualFrameWidth,
+            gResidualOutputHeight != 0 ? gResidualOutputHeight : gResidualFrameHeight);
+        uint2 curPos = min(uint2(gridUv * frameSize),frameSize - 1);
+        uint2 gs = uint2(gGuideWidth,gGuideHeight);
+        uint2 gp = min(uint2(gridUv * gs),gs - 1) + uint2(gResidualMotionBaseX,gResidualMotionBaseY);
+        float2 motionUv = gMotion.Load(int3(gp,0)).xy * float2(gMvScaleX,gMvScaleY);
+        float2 motionPx = motionUv * float2(outputSize);
+        float magPx = length(motionPx);
+        float2 plusUv = gridUv + motionUv;
+        float2 minusUv = gridUv - motionUv;
+        bool valid = all(isfinite(motionUv)) && magPx >= 0.75 && magPx <= 96.0 &&
+                     all(plusUv >= 0.0) && all(plusUv <= 1.0) &&
+                     all(minusUv >= 0.0) && all(minusUv <= 1.0);
+        if (!valid)
+        {
+            gTarget[id.xy] = float4(0.0,0.0,0.0,0.0);
+            return;
+        }
+        float3 cur = SanitizeFinite3(gSource.Load(int3(curPos,0)).rgb,float3(0.0,0.0,0.0));
+        float3 prev0 = SanitizeFinite3(gOriginal.SampleLevel(gLinear,gridUv,0).rgb,cur);
+        float3 prevPlus = SanitizeFinite3(gOriginal.SampleLevel(gLinear,plusUv,0).rgb,cur);
+        float3 prevMinus = SanitizeFinite3(gOriginal.SampleLevel(gLinear,minusUv,0).rgb,cur);
+        gTarget[id.xy] = float4(EditMagnitude(cur-prev0),EditMagnitude(cur-prevPlus),EditMagnitude(cur-prevMinus),1.0);
         return;
     }
 

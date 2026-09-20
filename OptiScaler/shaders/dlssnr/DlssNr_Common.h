@@ -296,7 +296,9 @@ static_assert(offsetof(DlssNrConstants, ResidualOutputHeight) == 256);
 enum DlssNrResidualMode : uint32_t
 {
     DlssNrResidualMode_Accumulate = 0, // (edited - original) blended into the reprojected history
-    DlssNrResidualMode_Apply = 1,      // base + delta * TransferStrength, after RR+SR
+    DlssNrResidualMode_Apply = 1, // base + delta * TransferStrength, after RR+SR
+    DlssNrResidualMode_VarianceSelect = 2,
+    DlssNrResidualMode_MvSelfTest = 3,
 };
 
 class DlssNr_Common

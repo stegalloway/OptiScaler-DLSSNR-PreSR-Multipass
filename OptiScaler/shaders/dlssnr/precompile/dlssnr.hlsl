@@ -944,7 +944,11 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
 
     // Bound both brightening and darkening. A single luminance-derived scale preserves hue.
     const float guard = max(gMaxRatio, 1.0);
-    float boundedRatio = clamp(amplified, 1.0 / guard, guard);
+    // Normal composition PSO only: ResidualBlend is unused here (byte 116).
+    // Residual PSO retains its ordinary blend semantics at the same offset.
+    const float stockShadowFloor = 1.0 / guard;
+    const float shadowFloor = gResidualBlendUnused > 0.0 ? clamp(gResidualBlendUnused, stockShadowFloor, 1.0) : stockShadowFloor;
+    float boundedRatio = clamp(amplified, shadowFloor, guard);
 
     // Exactly one while the ratio is already inside the guard, so a frame that never needed bounding
     // is untouched rather than rounded, and strength zero stays bit-identical.

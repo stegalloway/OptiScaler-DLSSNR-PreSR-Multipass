@@ -200,10 +200,12 @@ float3 MatchBrightness(float3 light, float3 scene, float3 gain)
     float delta = exp2(editedFit.x) - exp2(baseFit.x);
     if (!isfinite(delta) || delta * (editedY - baseY) < 0.0) return fallback;
     float limit = clamp(maxRatio, 1.0, 8.0);
-    float wantedY = clamp(finalY + delta, finalY / limit, finalY * limit);
+    // Finished-colour PSO only: unused MvScaleX (byte 36) carries ShadowFloor.
+    float lowerGain = layoutUnusedMvScaleX > 0.0 ? clamp(layoutUnusedMvScaleX, 1.0 / limit, 1.0) : 1.0 / limit;
+    float wantedY = clamp(finalY + delta, finalY * lowerGain, finalY * limit);
     // Correct luminance only; retain the existing RGB transfer's chromaticity approximation.
     // A common scale preserves chromaticity while keeping every RGB gain inside the original bounds.
-    float minScale = (1.0 / limit) / min(gain.r, min(gain.g, gain.b));
+    float minScale = lowerGain / min(gain.r, min(gain.g, gain.b));
     float maxScale = limit / max(gain.r, max(gain.g, gain.b));
     float3 matched = fallback * clamp(wantedY / fallbackY, minScale, maxScale);
     return all(isfinite(matched)) ? lerp(fallback, matched, confidence) : fallback;
@@ -240,7 +242,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         float floorValue = max(max(base.r, max(base.g, base.b)) * 0.02,
                                max(exposureScale, 1e-4) * 1e-4);
         float limit = clamp(maxRatio, 1.0, 8.0);
-        float3 gain = clamp(1.0 + (edited - base) / max(base, floorValue), 1.0 / limit, limit);
+        // Finished-colour PSO only: unused MvScaleX (byte 36) carries ShadowFloor.
+        float lowerGain = layoutUnusedMvScaleX > 0.0 ? clamp(layoutUnusedMvScaleX, 1.0 / limit, 1.0) : 1.0 / limit;
+        float3 gain = clamp(1.0 + (edited - base) / max(base, floorValue), lowerGain, limit);
         target[id.xy] = float4(0.5 + log2(gain) / 8.0, 1.0);
         return;
     }
@@ -253,7 +257,9 @@ void CSMain(uint3 id : SV_DispatchThreadID)
         if (!all(isfinite(carrier)) || all(carrier == 0.5))
         { target[id.xy] = pixel; return; }
         float limit = clamp(maxRatio, 1.0, 8.0);
-        float3 gain = exp2(clamp((carrier - 0.5) * 8.0, -log2(limit), log2(limit)));
+        // Finished-colour PSO only: unused MvScaleX (byte 36) carries ShadowFloor.
+        float lowerGain = layoutUnusedMvScaleX > 0.0 ? clamp(layoutUnusedMvScaleX, 1.0 / limit, 1.0) : 1.0 / limit;
+        float3 gain = exp2(clamp((carrier - 0.5) * 8.0, log2(lowerGain), log2(limit)));
         bool pq = mode == 4 || mode == 9;
         float3 light = mode == 2 ? pow(max(pixel.rgb, 0.0), 2.2) :
                        pq ? mul(to709, DecodePQ(pixel.rgb)) : pixel.rgb;

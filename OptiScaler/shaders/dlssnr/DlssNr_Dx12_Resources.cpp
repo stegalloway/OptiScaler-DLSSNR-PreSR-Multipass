@@ -26,6 +26,25 @@ auto DlssNr_Dx12::State::ReleaseSurfacesIfFormatChanged(DXGI_FORMAT needed) -> v
                                 &nr.outputNative, &nr.activeColor })
         ParkNrResource(*r);
 
+    for (ID3D12Resource** r : { &nr.stabResolved, &nr.stabHistory[0], &nr.stabHistory[1], &nr.stabPrevBase,
+                                &nr.stabMvDiag, &nr.stabMvReadback })
+        ParkNrResource(*r);
+    nr.stabHistoryReadable[0] = nr.stabHistoryReadable[1] = false;
+    nr.stabHistoryIndex = 0;
+    nr.stabHistoryValid = false;
+    nr.stabPrevBaseReadable = false;
+    nr.stabPrevBaseValid = false;
+    nr.stabMvReadbackPending = false;
+    nr.stabMvIgnorePending = false;
+    nr.stabMvCompletion = {};
+    nr.stabMvSelfTestPassed = false;
+    nr.stabMvSelfTestFailed = false;
+    nr.stabMvSign = 0.0f;
+    nr.stabMvAttempts = nr.stabMvMovingFrames = 0;
+    nr.stabMvAccumSamples = 0;
+    nr.stabMvAccumUnwarped = nr.stabMvAccumPlus = nr.stabMvAccumMinus = 0.0;
+    nr.stabPathReady = false;
+
     nr.passScratchFailed = false;
 
     nr.reset = true;
@@ -197,6 +216,25 @@ auto DlssNr_Dx12::State::ReleaseResources() -> void
     ReleaseSupersamplers();
 
     ParkNrResource(nr.outputNative);
+
+    for (ID3D12Resource** r : { &nr.stabResolved, &nr.stabHistory[0], &nr.stabHistory[1], &nr.stabPrevBase,
+                                &nr.stabMvDiag, &nr.stabMvReadback })
+        ParkNrResource(*r);
+    nr.stabHistoryReadable[0] = nr.stabHistoryReadable[1] = false;
+    nr.stabHistoryIndex = 0;
+    nr.stabHistoryValid = false;
+    nr.stabPrevBaseReadable = false;
+    nr.stabPrevBaseValid = false;
+    nr.stabMvReadbackPending = false;
+    nr.stabMvIgnorePending = false;
+    nr.stabMvCompletion = {};
+    nr.stabMvSelfTestPassed = false;
+    nr.stabMvSelfTestFailed = false;
+    nr.stabMvSign = 0.0f;
+    nr.stabMvAttempts = nr.stabMvMovingFrames = 0;
+    nr.stabMvAccumSamples = 0;
+    nr.stabMvAccumUnwarped = nr.stabMvAccumPlus = nr.stabMvAccumMinus = 0.0;
+    nr.stabPathReady = false;
 
     ParkNrResource(nr.exposureMeter);
     ParkNrResource(nr.exposure);

@@ -22,6 +22,12 @@ class GpuLifetime
     void Record(ID3D12GraphicsCommandList* commands);
     // Tracker must outlive the probe; discarded work never satisfies it.
     std::function<bool()> CompletionProbe(ID3D12GraphicsCommandList* commands);
+    enum class ReadbackState { Pending, Complete, Discarded, Failed };
+    // CPU readback requires a sealed recording as well as submitted completion:
+    // an open command list may be replayed while the CPU is reading its output.
+    // The probe owns the exact recording identity, never a reusable list address.
+    // Like CompletionProbe, this tracker must outlive calls to the probe.
+    std::function<ReadbackState()> ReadbackProbe(ID3D12GraphicsCommandList* commands);
     // One reusable monotonic fence per queue; aliases are normalized at every notification.
     // Only call after the real ExecuteCommandLists or a successful command-list Reset.
     void Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);

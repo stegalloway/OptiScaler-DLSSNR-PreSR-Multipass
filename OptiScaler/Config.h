@@ -268,6 +268,16 @@ class Config
     CustomOptional<bool> DlssNrResidualAcrossRr { false };
     // RR history blend before private upscaling, clamped to 0.01..1.
     CustomOptional<float> DlssNrResidualAcrossRrBlend { 0.08f };
+    // NRSTAB portability controls layered on the v0.8.5 with submitted-completion readback.
+    CustomOptional<bool> DlssNrStabilizerEnabled { true };
+    CustomOptional<float> DlssNrStabilizerK { 1.0f };
+    CustomOptional<float> DlssNrStabilizerMotionRejectPx { 2.0f };
+
+    // Advanced compatibility controls for rejecting transitional/invalid
+    // motion-vector guide geometry before temporal history or the startup
+    // motion-direction diagnostic may consume it.
+    CustomOptional<unsigned int> DlssNrStabilizerMinMotionDimension { 32u };
+    CustomOptional<float> DlssNrStabilizerMotionAspectTolerance { 1.25f };
     CustomOptional<int> DlssNrToggleKey { UnboundKey };
     CustomOptional<uint32_t> DlssNrPreset { 0 };
     CustomOptional<float> DlssNrIntensity { 1.0f };
@@ -310,6 +320,8 @@ class Config
 
     // Maximum pixel brightening/darkening ratio.
     CustomOptional<float> DlssNrMaxRatio { 2.0f };
+    // Zero preserves upstream darkening behavior.
+    CustomOptional<float> DlssNrShadowFloor { 0.0f };
 
     // Reduced-resolution output: 0 classic, 1 matched residual, 2 matched residual + DLSS.
     CustomOptional<uint32_t> DlssNrTransfer { 1 };

@@ -153,6 +153,24 @@ std::function<bool()> GpuLifetime::CompletionProbe(ID3D12GraphicsCommandList* co
             };
     return [] { return false; };
 }
+std::function<GpuLifetime::ReadbackState()> GpuLifetime::ReadbackProbe(ID3D12GraphicsCommandList* commands)
+{
+    std::lock_guard lock(impl->mutex);
+    commands = Identity(commands);
+    for (const auto& use : impl->recordings)
+        if (use->open && use->commands == commands)
+            return [this, use] {
+                std::lock_guard lock(impl->mutex);
+                if (use->signalFailed) return ReadbackState::Failed;
+                for (const auto& [timeline, value] : use->completions)
+                    if (timeline->failed || timeline->fence->GetCompletedValue() == UINT64_MAX)
+                        return ReadbackState::Failed;
+                if (use->open) return ReadbackState::Pending;
+                if (use->completions.empty()) return ReadbackState::Discarded;
+                return use->Finished() ? ReadbackState::Complete : ReadbackState::Pending;
+            };
+    return [] { return ReadbackState::Discarded; };
+}
 void GpuLifetime::Submitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {
     std::lock_guard lock(impl->mutex);

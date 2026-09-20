@@ -280,7 +280,9 @@ void RenderBlend(Config* config)
     }
 
     Slider("Highlight guard", config->DlssNrMaxRatio, 1.0f, 8.0f, "%.1fx", 2.0f);
-    HelpMarker("Limit pixel brightening and darkening.");
+    HelpMarker("Limit pixel brightening and stock darkening.");
+    Slider("Shadow minimum", config->DlssNrShadowFloor, 0.0f, 1.0f, "%.2fx", 0.0f);
+    HelpMarker("Minimum luminance relative to the untouched frame. 0.80x permits at most 20% darkening. Zero preserves stock behavior.");
 }
 
 void RenderInspect(Config* config)

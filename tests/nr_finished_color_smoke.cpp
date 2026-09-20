@@ -278,6 +278,20 @@ try
     for(unsigned i=0;i<samples;++i)
         if(scene[i].r>=0.1f && scene[i].r<=64.0f) pqError+=std::abs(matchedPq[i].r-expectedPq[i].r);
     expect(pqError < 1.0,"HDR10 fitted transfer did not follow the reference tone curve");
+    // ShadowFloor uses only the finished-colour PSO's unused offset 36.
+    // Ordinary exposure anchors and the NRSTAB tail must not change its meaning.
+    std::vector<Pixel> floorBase(2, {2,2,2,0.7f}), floorEdit(2, {0,0,0,1});
+    c={}; c.Mode=3; c.Width=2; c.Height=1; c.MaxRatio=4;
+    auto stockFloor=run(c,floorBase,floorBase,floorEdit,floorEdit);
+    c.MvScaleX=0.8f;
+    auto raisedFloor=run(c,floorBase,floorBase,floorEdit,floorEdit);
+    expect(closeFloat(stockFloor[0].r,0.5f) && closeFloat(raisedFloor[0].r,1.6f) &&
+           raisedFloor[0].a==floorBase[0].a, "finished ShadowFloor lower gain/alpha mismatch");
+    c.Mode=5; c.WhitePoint=1;
+    auto encodedFloor=run(c,floorBase,floorEdit,floorBase,floorEdit);
+    expect(std::abs(encodedFloor[0].r-(0.5f+std::log2(0.8f)/8.0f))<0.001f,
+           "deferred encode ShadowFloor carrier mismatch");
+    puts("PASS: finished/deferred ShadowFloor zero default and raised lower-gain alias");
     puts("PASS: fitted HDR shoulder, local/flat fallback, neutral bypass, exposure, history and PQ transfer");
     std::puts("PASS: PQ reference luminance, HDR10 round trip, wide gamut, alpha, 2000-nit highlight (WARP)");
     std::puts("PASS: pre-SR residual transfer in SDR/scRGB/HDR10, signed edits, neutral bypass, exposure, invalid input");
