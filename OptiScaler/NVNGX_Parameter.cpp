@@ -1,4 +1,5 @@
 #include "pch.h"
+#include <framegen/dlssg/MfgUnlock.h>
 
 #include "NVNGX_Parameter.h"
 
@@ -7,6 +8,15 @@
 #include <ankerl/unordered_dense.h>
 #include <misc/IdentifyGpu.h>
 #include <framegen/nvngx/Nvngx_FG.h>
+
+static int ResolveNvngxAdvertisedMfgMaximum(bool adaMfgActive)
+{
+#if defined(OPTISCALER_RTX40_MFG)
+    return adaMfgActive ? std::max(1, static_cast<int>(MfgUnlock::UnlockedMax())) : 1;
+#else
+    return 1;
+#endif
+}
 
 /// @brief Calculates the resolution scaling ratio override based on the provided quality level and current
 /// configuration.
@@ -812,6 +822,10 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
         // Streamline handle the max interpolated frame count
         int countMax =
             State::Instance().activeFgNvngx != FGNvngxReplacement::None ? Nvngx_FG::getMaxFakeFramesCount() : 1;
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::TryApply();
+        countMax = std::max(countMax, static_cast<int>(MfgUnlock::UnlockedMax()));
+#endif
         InParams->Set("DLSSG.MultiFrameCountMax", countMax);
 
         if (State::Instance().NVNGX_Engine == NVSDK_NGX_ENGINE_TYPE_UNREAL ||

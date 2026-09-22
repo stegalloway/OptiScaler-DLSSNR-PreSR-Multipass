@@ -22,6 +22,34 @@
 
 using namespace DirectX;
 
+static int ResolveDlssgRuntimeMaximum(unsigned int nativeMaximum)
+{
+    const auto safeNativeMaximum = std::max(1u, nativeMaximum);
+#if defined(OPTISCALER_RTX40_MFG)
+    return static_cast<int>(std::max(safeNativeMaximum, MfgUnlock::UnlockedMax()));
+#else
+    return static_cast<int>(safeNativeMaximum);
+#endif
+}
+
+static bool CommitDlssgDispatchOptions(sl::Result result, const sl::DLSSGOptions& options,
+                                       int& acceptedFramesToInterpolate)
+{
+    if (result != sl::Result::eOk)
+    {
+        LOG_ERROR("Couldn't set DLSSG options, error: {}", magic_enum::enum_name(result));
+        return false;
+    }
+
+    acceptedFramesToInterpolate = static_cast<int>(options.numFramesToGenerate);
+    const int acceptedPacing = options.mode == sl::DLSSGMode::eOff ? 0 : acceptedFramesToInterpolate;
+    auto& state = State::Instance();
+    state.dlssgLastSetMode = options.mode;
+    state.dlssgDetectedInterpolationCount = acceptedPacing;
+    ReflexHooks::setDlssgFrameCount(acceptedPacing);
+    return true;
+}
+
 feature_version DLSSG_Dx12::Version()
 {
     if (StreamlineProxy::LoadStreamline())
@@ -137,10 +165,7 @@ bool DLSSG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
     sl::DLSSGOptions dlssgOptions {};
     if (StreamlineProxy::DLSSGGetState()(viewport, dlssgState, &dlssgOptions) == sl::Result::eOk)
     {
-        _maxInterpolationCount = dlssgState.numFramesToGenerateMax;
-#if defined(OPTISCALER_RTX40_MFG)
-        _maxInterpolationCount = std::max(_maxInterpolationCount, static_cast<int>(MfgUnlock::UnlockedMax()));
-#endif
+        _maxInterpolationCount = ResolveDlssgRuntimeMaximum(dlssgState.numFramesToGenerateMax);
         LOG_INFO("Max supported interpolations: {}", dlssgState.numFramesToGenerateMax);
 
         _supportsDMFG = dlssgState.bIsDynamicMFGSupported == sl::Boolean::eTrue;
@@ -258,10 +283,7 @@ bool DLSSG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmd
     sl::DLSSGOptions dlssgOptions {};
     if (StreamlineProxy::DLSSGGetState()(viewport, dlssgState, &dlssgOptions) == sl::Result::eOk)
     {
-        _maxInterpolationCount = dlssgState.numFramesToGenerateMax;
-#if defined(OPTISCALER_RTX40_MFG)
-        _maxInterpolationCount = std::max(_maxInterpolationCount, static_cast<int>(MfgUnlock::UnlockedMax()));
-#endif
+        _maxInterpolationCount = ResolveDlssgRuntimeMaximum(dlssgState.numFramesToGenerateMax);
         LOG_INFO("Max supported interpolations: {}", dlssgState.numFramesToGenerateMax);
 
         _supportsDMFG = dlssgState.bIsDynamicMFGSupported == sl::Boolean::eTrue;
@@ -347,6 +369,11 @@ bool DLSSG_Dx12::Dispatch()
 {
     LOG_FUNC();
 
+#if defined(OPTISCALER_RTX40_MFG)
+    MfgUnlock::TryApply();
+#endif
+    _maxInterpolationCount = ResolveDlssgRuntimeMaximum(_maxInterpolationCount);
+
     UINT64 willDispatchFrame = 0;
     auto fIndex = GetDispatchIndex(willDispatchFrame);
     if (fIndex < 0)
@@ -368,24 +395,21 @@ bool DLSSG_Dx12::Dispatch()
 
     auto& state = State::Instance();
 
-    if (Config::Instance()->FGDLSSGInterpolationCount.value_or_default() > _maxInterpolationCount)
+    int requestedFramesToInterpolate = std::max(1, Config::Instance()->FGDLSSGInterpolationCount.value_or_default());
+    if (requestedFramesToInterpolate > _maxInterpolationCount)
     {
-        Config::Instance()->FGDLSSGInterpolationCount = _maxInterpolationCount;
-        LOG_WARN("Requested interpolation count is higher than max supported, setting to max: {}",
-                 _maxInterpolationCount);
+        requestedFramesToInterpolate = _maxInterpolationCount;
+        LOG_WARN("Requested interpolation count is higher than max supported, using max: {}", _maxInterpolationCount);
     }
 
-    if (_framesToInterpolate != Config::Instance()->FGDLSSGInterpolationCount.value_or_default())
+    if (_framesToInterpolate != requestedFramesToInterpolate)
     {
-        LOG_INFO("Interpolation count changed {} -> {}", _framesToInterpolate,
-                 Config::Instance()->FGDLSSGInterpolationCount.value_or_default());
-
-        _framesToInterpolate = Config::Instance()->FGDLSSGInterpolationCount.value_or_default();
+        LOG_INFO("Interpolation count requested {} -> {}", _framesToInterpolate, requestedFramesToInterpolate);
     }
 
     sl::DLSSGOptions options {};
     options.mode = sl::DLSSGMode::eOn;
-    options.numFramesToGenerate = _framesToInterpolate;
+    options.numFramesToGenerate = requestedFramesToInterpolate;
     options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
 
     if (Config::Instance()->FGDLSSGForceDMFG.value_or_default())
@@ -397,10 +421,8 @@ bool DLSSG_Dx12::Dispatch()
     StreamlineHooks::applyMenuDlssgInterlock(options, true);
     auto dlssgSetOptionsResult = StreamlineProxy::DLSSGSetOptions()(viewport, options);
 
-    if (dlssgSetOptionsResult != sl::Result::eOk)
-    {
-        LOG_ERROR("Couldn't set DLSSG options, error: {}", magic_enum::enum_name(dlssgSetOptionsResult));
-    }
+    if (!CommitDlssgDispatchOptions(dlssgSetOptionsResult, options, _framesToInterpolate))
+        return false;
 
     sl::ReflexOptions reflexConst = {};
     reflexConst.mode = sl::ReflexMode::eLowLatency;

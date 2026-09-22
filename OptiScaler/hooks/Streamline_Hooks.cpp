@@ -1104,36 +1104,106 @@ bool StreamlineHooks::hkcommon_slOnPluginLoad(sl::param::IParameters* params, co
 
 sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
 {
-    lastDlssgViewport = viewport;
-    lastDlssgOptions = options;
+    // Establish API ownership before entering Streamline. Its downstream NGX
+    // evaluations must not independently apply a still-pending UI multiplier.
+    gameDlssgOptionsObserved.store(true, std::memory_order_release);
+#if defined(OPTISCALER_RTX40_MFG)
+    MfgUnlock::TryApply();
+#endif
+    // Unknown versions may have a larger tail than our headers. Preserve the
+    // caller's storage and extensions instead of forwarding a sliced temporary.
+    if (options.structVersion == 0)
+        return sl::Result::eErrorInvalidParameter; // No valid known prefix exists.
+    if (options.structVersion > 5)
+    {
+        const auto result = o_slDLSSGSetOptions(viewport, options);
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::RecordSetOptions(options.numFramesToGenerate, options.numFramesToGenerate,
+                                   options.mode != sl::DLSSGMode::eOff, static_cast<unsigned>(result));
+#endif
+        if (result == sl::Result::eOk && options.structVersion > 5)
+        {
+            State::Instance().dlssgLastSetMode = options.mode;
+            ReflexHooks::setDlssgFrameCount(options.mode == sl::DLSSGMode::eOff ? 0 : options.numFramesToGenerate);
+            // UI intent stays pending: unknown ABI was passed through unchanged.
+        }
+        if (result != sl::Result::eOk)
+        {
+            LOG_WARN("DLSSG pass-through options rejected: version {}, viewport {}, thread {}, frame {}, result {}",
+                     options.structVersion, static_cast<uint32_t>(viewport), GetCurrentThreadId(),
+                     State::Instance().frameCount, magic_enum::enum_name(result));
+        }
+        return result;
+    }
 
-    // Avoid reading past the game's struct's size
+    // Copy only fields present in the caller's version. The last four bytes of
+    // v2/v4 are padding that becomes a real field when promoted to a newer ABI.
     sl::DLSSGOptions newOptions {};
-    auto newStructVer = newOptions.structVersion;
+    const auto originalStructVersion = options.structVersion;
 
     if (options.structVersion == 1)
         memcpy(&newOptions, &options, 104);
-    else if (options.structVersion == 2 || options.structVersion == 3)
+    else if (options.structVersion == 2)
+        memcpy(&newOptions, &options, 108);
+    else if (options.structVersion == 3)
         memcpy(&newOptions, &options, 112);
-    else if (options.structVersion == 4 || options.structVersion == 5)
+    else if (options.structVersion == 4)
+        memcpy(&newOptions, &options, 116);
+    else if (options.structVersion == 5)
         memcpy(&newOptions, &options, 120);
-    else
-        newOptions = options;
 
-    newOptions.structVersion = newStructVer;
-
-#if defined(OPTISCALER_RTX40_MFG)
-    // What the game asked for, before any override. A struct too old to carry the field reads as 1 (2X).
-    const unsigned int requestedCount = newOptions.numFramesToGenerate;
-#endif
+    // Retain the caller's structVersion so older Streamline runtimes (v1..v3) do not
+    // reject the call with eErrorInvalidParameter, unless Dynamic MFG (v5) is actively requested.
+    newOptions.structVersion = originalStructVersion;
 
     auto& state = State::Instance();
+    const auto requested = dlssgOptionsState.Read();
+    bool countOverrideApplied = false;
+    bool targetOverrideApplied = !requested.values.dynamicTarget.has_value();
+
+    const auto submitOptions = [&]()
+    {
+        const auto result = o_slDLSSGSetOptions(viewport, newOptions);
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::RecordSetOptions(options.numFramesToGenerate, newOptions.numFramesToGenerate,
+                                   newOptions.mode != sl::DLSSGMode::eOff, static_cast<unsigned>(result));
+#endif
+        if (result == sl::Result::eOk)
+        {
+            state.dlssgLastSetMode = newOptions.mode;
+            ReflexHooks::setDlssgFrameCount(newOptions.mode == sl::DLSSGMode::eOff ? 0
+                                                                                   : newOptions.numFramesToGenerate);
+            // The runtime can accept native/safety options while individual UI
+            // overrides remain unapplied. Acknowledge only a fully applied request.
+            const bool requestedActive =
+                requested.values.forceDynamic || requested.values.generatedFrames.value_or(0) > 0;
+            const bool requestedDynamicApplied =
+                !requested.values.forceDynamic || newOptions.mode == sl::DLSSGMode::eDynamic;
+            const bool requestedCountApplied =
+                !requested.values.generatedFrames.has_value() ||
+                (requested.values.generatedFrames.value() == 0
+                     ? newOptions.mode == sl::DLSSGMode::eOff ||
+                           (requested.values.forceDynamic && newOptions.mode == sl::DLSSGMode::eDynamic)
+                     : countOverrideApplied);
+            if ((!requestedActive || newOptions.mode != sl::DLSSGMode::eOff) && requestedDynamicApplied &&
+                requestedCountApplied && targetOverrideApplied)
+                dlssgOptionsState.Accepted(requested.generation);
+        }
+        else
+        {
+            LOG_WARN("DLSSG options rejected: viewport {}, thread {}, frame {}, mode {}, generated {}, result {}",
+                     static_cast<uint32_t>(viewport), GetCurrentThreadId(), state.frameCount,
+                     magic_enum::enum_name(newOptions.mode), newOptions.numFramesToGenerate,
+                     magic_enum::enum_name(result));
+        }
+        return result;
+    };
 
     // Disable game's DLSSG when we are trying to create our own instance of DLSSG
     if (state.activeFgInput != FGInput::DLSSG && state.activeFgOutput == FGOutput::DLSSG)
     {
         newOptions.mode = sl::DLSSGMode::eOff;
-        return o_slDLSSGSetOptions(viewport, newOptions);
+        return submitOptions();
     }
 
     // Make DLSSG auto always mean On
@@ -1144,17 +1214,20 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
                                         newOptions.mode == sl::DLSSGMode::eAuto ||
                                         newOptions.mode == sl::DLSSGMode::eDynamic;
 
-    bool enableDynamicMode = Config::Instance()->FGDLSSGOverrideForceDMFG.value_or_default() &&
-                             state.dlssgGameDMFGSupported && dlssgPotentiallyActive;
+    bool enableDynamicMode = requested.values.forceDynamic && state.dlssgGameDMFGSupported && dlssgPotentiallyActive;
 
     if (enableDynamicMode)
     {
         newOptions.mode = sl::DLSSGMode::eDynamic;
+        newOptions.structVersion = std::max(newOptions.structVersion, (size_t) 5);
     }
 
-    if (newOptions.mode == sl::DLSSGMode::eDynamic && Config::Instance()->FGDLSSGFramerateTargetDMFG.has_value())
+    // v5 can retain a target while On/Off without enabling Dynamic. Older callers
+    // keep their ABI; a target-only edit waits for a call that can represent it.
+    if (newOptions.structVersion >= 5 && requested.values.dynamicTarget.has_value())
     {
-        newOptions.dynamicTargetFrameRate = Config::Instance()->FGDLSSGFramerateTargetDMFG.value();
+        newOptions.dynamicTargetFrameRate = requested.values.dynamicTarget.value();
+        targetOverrideApplied = true;
     }
 
     applyMenuDlssgInterlock(newOptions, dlssgPotentiallyActive);
@@ -1164,50 +1237,29 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     if (dlssgPotentiallyActive && state.streamlineVersion >= feature_version { 2, 7, 1 })
     {
 #if defined(OPTISCALER_RTX40_MFG)
-        MfgUnlock::TryApply();
-        if (const auto maximum = MfgUnlock::UnlockedMax(); maximum > 0)
-            state.dlssgMfgMax = std::max(state.dlssgMfgMax.value_or(0), static_cast<int>(maximum));
+        state.dlssgMfgMax = std::max(state.dlssgMfgMax.value_or(0), static_cast<int>(MfgUnlock::UnlockedMax()));
 #endif
 
-        // Populate dlssgMfgMax once
-        if (!state.dlssgMfgMax.has_value()
-#if defined(OPTISCALER_RTX40_MFG)
-            && !MfgUnlock::Pending()
-#endif
-        )
+        // Do not issue an extra GetState here: it consumes the runtime's
+        // numFramesActuallyPresented delta. Capability is learned from the
+        // game's own query (or a verified unlock); an unknown override is x2.
+        if (requested.values.generatedFrames.has_value())
         {
-            sl::DLSSGState localState {};
-            sl::DLSSGOptions localOptions {};
-            if (o_slDLSSGGetState(viewport, localState, &localOptions) == sl::Result::eOk)
+            auto overrideCount = requested.values.generatedFrames.value();
+            if (overrideCount != 0)
             {
-                if (localState.numFramesToGenerateMax > 0 && localState.numFramesToGenerateMax < 6)
-                {
-                    state.dlssgMfgMax = localState.numFramesToGenerateMax;
-                    LOG_TRACE("Saving original numFramesToGenerateMax: {}", state.dlssgMfgMax.value());
-
-                    // Volatile: the clamp holds for this run and leaves the ini setting alone.
-                    if (Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value() &&
-                        Config::Instance()->FGDLSSGOverrideInterpolationCount.value() > state.dlssgMfgMax.value())
-                    {
-                        Config::Instance()->FGDLSSGOverrideInterpolationCount.set_volatile_value(
-                            state.dlssgMfgMax.value());
-                    }
-                }
+                newOptions.numFramesToGenerate =
+                    std::clamp(overrideCount, 1, std::max(1, state.dlssgMfgMax.value_or(1)));
+                countOverrideApplied = true;
+            }
+            else if (!enableDynamicMode)
+            {
+                newOptions.mode = sl::DLSSGMode::eOff;
             }
         }
-
-        // Won't take effect with Dynamic
-        if (Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value())
-        {
-            auto overrideCount = Config::Instance()->FGDLSSGOverrideInterpolationCount.value();
-            if (overrideCount != 0)
-                newOptions.numFramesToGenerate = overrideCount;
-            else if (!enableDynamicMode)
-                newOptions.mode = sl::DLSSGMode::eOff;
-        }
     }
-    else if (dlssgPotentiallyActive && Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value() &&
-             Config::Instance()->FGDLSSGOverrideInterpolationCount.value() != 0)
+    else if (dlssgPotentiallyActive && requested.values.generatedFrames.has_value() &&
+             requested.values.generatedFrames.value() != 0)
     {
         // Once. slDLSSGSetOptions runs per frame.
         static bool warnedNoMfg = false;
@@ -1221,22 +1273,14 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         }
     }
 
-    state.dlssgLastSetMode = newOptions.mode;
-
-    const auto result = o_slDLSSGSetOptions(viewport, newOptions);
-
-#if defined(OPTISCALER_RTX40_MFG)
-    MfgUnlock::RecordSetOptions(requestedCount, newOptions.numFramesToGenerate, newOptions.mode != sl::DLSSGMode::eOff,
-                                static_cast<unsigned int>(result));
-#endif
-
-    return result;
+    return submitOptions();
 }
 
 sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport, sl::DLSSGState& state,
                                               const sl::DLSSGOptions* options)
 {
     sl::Result result {};
+    unsigned int nativeMaximum = 0;
 
 #if defined(OPTISCALER_RTX40_MFG)
     MfgUnlock::TryApply();
@@ -1245,11 +1289,17 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
     if (originalStructVersion < 4)
     {
         sl::DLSSGState newState {};
+        newState.structVersion = 4;
 
         // We might be feeding a newer struct to an older SL but that seems to work just fine for this Get function
         result = o_slDLSSGGetState(viewport, dynamic_cast<sl::DLSSGState&>(newState), options);
         if (result != sl::Result::eOk)
             return result;
+
+        nativeMaximum = newState.numFramesToGenerateMax;
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::RecordState(newState.numFramesActuallyPresented);
+#endif
 
         // Copy back data to game's struct
         memcpy(&state, &newState, 56); // struct ver 1 size
@@ -1270,72 +1320,34 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
         }
 
         State::Instance().dlssgGameDMFGSupported = newState.bIsDynamicMFGSupported == sl::eTrue;
-
-#if defined(OPTISCALER_RTX40_MFG)
-        // The real DLSS-G's count, unless our own frame generation stands in for it (it writes its own
-        // count further down).
-        if (State::Instance().activeFgInput != FGInput::DLSSG)
-            MfgUnlock::RecordState(newState.numFramesActuallyPresented);
-#endif
     }
     else
     {
         result = o_slDLSSGGetState(viewport, state, options);
         if (result != sl::Result::eOk)
             return result;
-        State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
-
+        nativeMaximum = state.numFramesToGenerateMax;
 #if defined(OPTISCALER_RTX40_MFG)
-        if (State::Instance().activeFgInput != FGInput::DLSSG)
-            MfgUnlock::RecordState(state.numFramesActuallyPresented);
+        MfgUnlock::RecordState(state.numFramesActuallyPresented);
 #endif
+        State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
     }
 
 #if defined(OPTISCALER_RTX40_MFG)
     // Version 1 has no maximum-count field: retain its ABI boundary.
     if (originalStructVersion >= 2)
-        state.numFramesToGenerateMax = std::max(state.numFramesToGenerateMax, MfgUnlock::UnlockedMax());
-#endif
-
-    if (!State::Instance().dlssgGameDMFGSupported)
     {
-        Config::Instance()->FGDLSSGOverrideForceDMFG.set_volatile_value(false);
+        state.numFramesToGenerateMax = std::max(state.numFramesToGenerateMax, MfgUnlock::UnlockedMax());
     }
+#endif
 
     auto& optiState = State::Instance();
+    // A successful query replaces the cache, including an unavailable/zero cap.
+    // Keeping an earlier MFG limit would allow a later override to use stale data.
+    optiState.dlssgMfgMax = nativeMaximum <= static_cast<uint32_t>(INT_MAX) ? static_cast<int>(nativeMaximum) : 0;
 #if defined(OPTISCALER_RTX40_MFG)
-    if (const auto maximum = MfgUnlock::UnlockedMax(); maximum > 0)
-        optiState.dlssgMfgMax = std::max(optiState.dlssgMfgMax.value_or(0), static_cast<int>(maximum));
+    optiState.dlssgMfgMax = std::max(optiState.dlssgMfgMax.value_or(0), static_cast<int>(MfgUnlock::UnlockedMax()));
 #endif
-
-    if (optiState.streamlineVersion >= feature_version { 2, 7, 1 })
-    {
-        if (!optiState.dlssgMfgMax.has_value()
-#if defined(OPTISCALER_RTX40_MFG)
-            && !MfgUnlock::Pending()
-#endif
-        )
-        {
-            sl::DLSSGState localState {};
-            sl::DLSSGOptions localOptions {};
-            if (o_slDLSSGGetState(viewport, localState, &localOptions) == sl::Result::eOk)
-            {
-                if (localState.numFramesToGenerateMax > 0 && localState.numFramesToGenerateMax < 6)
-                {
-                    optiState.dlssgMfgMax = localState.numFramesToGenerateMax;
-                    LOG_TRACE("Saving original numFramesToGenerateMax: {}", optiState.dlssgMfgMax.value());
-
-                    // Volatile: the clamp holds for this run and leaves the ini setting alone.
-                    if (Config::Instance()->FGDLSSGOverrideInterpolationCount.has_value() &&
-                        Config::Instance()->FGDLSSGOverrideInterpolationCount.value() > optiState.dlssgMfgMax.value())
-                    {
-                        Config::Instance()->FGDLSSGOverrideInterpolationCount.set_volatile_value(
-                            optiState.dlssgMfgMax.value());
-                    }
-                }
-            }
-        }
-    }
 
     if (optiState.activeFgInput == FGInput::DLSSG)
     {
@@ -1630,10 +1642,13 @@ sl::Result StreamlineHooks::hkslPCLSetMarker(sl::PCLMarker marker, const sl::Fra
             sl::FrameToken* newFramePointer {};
             auto result = o_slGetNewFrameToken(newFramePointer, &newFrameId);
 
-            LOG_WARN("Simulation start marker sent after end marker, offset: {}", correction_offset);
-
-            result = o_slPCLSetMarker(marker, *newFramePointer);
-            return result;
+            if (result == sl::Result::eOk && newFramePointer != nullptr)
+            {
+                LOG_WARN("Simulation start marker sent after end marker, offset: {}", correction_offset);
+                return o_slPCLSetMarker(marker, *newFramePointer);
+            }
+            LOG_WARN("Simulation marker correction token unavailable for frame {}, result {}", newFrameId,
+                     magic_enum::enum_name(result));
         }
     }
 
@@ -1807,18 +1822,30 @@ void StreamlineHooks::updateForceReflex()
     }
 }
 
+void StreamlineHooks::initializeDlssgOptions()
+{
+    const auto* config = Config::Instance();
+    dlssgOptionsState.Initialize({ config->FGDLSSGOverrideInterpolationCount,
+                                   config->FGDLSSGOverrideForceDMFG.value_or_default(),
+                                   config->FGDLSSGFramerateTargetDMFG });
+}
+
 void StreamlineHooks::updateDlssgOptions()
 {
-    if (o_slDLSSGSetOptions)
-    {
-        LOG_FUNC();
-        hkslDLSSGSetOptions(lastDlssgViewport, lastDlssgOptions);
-    }
+    // Called by the settings UI after an edit; no Streamline call is made
+    // from menu rendering.
+    // No borrowed DLSSGOptions/next pointer is retained or replayed here.
+    const auto* config = Config::Instance();
+    dlssgOptionsState.Queue({ config->FGDLSSGOverrideInterpolationCount,
+                              config->FGDLSSGOverrideForceDMFG.value_or_default(),
+                              config->FGDLSSGFramerateTargetDMFG });
+    LOG_INFO("DLSSG override queued; waiting for the game's next options call");
 }
 
 void StreamlineHooks::applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool potentiallyActive)
 {
     auto& state = State::Instance();
+    // Generic v0.8.5 candidate: PureDark ownership is a separate, excluded overlay.
     if (state.swapchainApi != API::Vulkan && !state.menuOverlayIsVulkan)
         return;
     if (potentiallyActive && !MenuOverlayBase::IsVisible())
@@ -1827,7 +1854,6 @@ void StreamlineHooks::applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool po
     {
         options.mode = sl::DLSSGMode::eOff;
         options.flags |= sl::DLSSGFlags::eRetainResourcesWhenOff;
-        ReflexHooks::setDlssgFrameCount(0);
     }
 }
 
@@ -1896,6 +1922,7 @@ void StreamlineHooks::unhookInterposer()
 // Call it just after sl.interposer's load or if sl.interposer is already loaded
 void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 {
+    initializeDlssgOptions();
     LOG_FUNC();
 
     if (!slInterposer)
