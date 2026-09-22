@@ -69,6 +69,7 @@ struct DlssNr_Dx12::State
         uint64_t lastFrame = 0;
         bool submitted = false, failed = false, depthInverted = false, readable = false, reset = true;
         unsigned pendingSubmissions = 0;
+        bool structural = false;
         ~Enlarger() { dlss.reset(); } // Release NGX before its borrowed input/output resources.
     };
     std::unique_ptr<Enlarger> enlarger;

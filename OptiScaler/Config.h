@@ -323,7 +323,7 @@ class Config
     // Zero preserves upstream darkening behavior.
     CustomOptional<float> DlssNrShadowFloor { 0.0f };
 
-    // Reduced-resolution output: 0 classic, 1 matched residual, 2 matched residual + DLSS.
+    // Reduced output: 0 classic, 1/2 matched residual spatial/DLSS, 3/4 lighting + colour spatial/DLSS.
     CustomOptional<uint32_t> DlssNrTransfer { 1 };
 
     // 0 normal, 1 model input, 2 model answer, 3 amplified edit.

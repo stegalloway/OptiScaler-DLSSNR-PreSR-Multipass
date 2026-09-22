@@ -24,7 +24,7 @@ cbuffer Params : register(b0)
     float gCompareSplit : packoffset(c3.z);
     float gCompareZoom : packoffset(c3.w);
     uint gCompareSwap : packoffset(c4.x);
-    uint gTransfer : packoffset(c4.y);
+    uint gTransfer : packoffset(c4.y); // 0 classic, 1/2 residual, 3/4 lighting + colour
     float gDebugScale : packoffset(c4.z);
     uint gReversibleMode : packoffset(c4.w);
     uint gApplyModel : packoffset(c5.x);
@@ -455,6 +455,8 @@ float3 CubeScaleResidual(float3 P, float3 T)
     return P + saturate(alpha) * d;
 }
 
+#include "dlssnr_resize.hlsli"
+
 groupshared float4 gExposureReduce[64];
 
 [numthreads(8, 8, 1)]
@@ -615,6 +617,11 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     // values below it carry darkening. A reversible signed compression avoids clipping negative
     // edits at the DLSS input. Scale small linear-light edits up before storing them in FP16;
     // at unit scale, a dark scene's edits round to neutral before DLSS even sees them.
+    if (gMode == 12)
+    {
+        gTarget[id.xy] = float4(NrEncodeResizeField(NrPairedResizeField(int2(id.xy), int2(gWidth, gHeight))), 1);
+        return;
+    }
     if (gMode == 9)
     {
         float3 source = gSource.Load(int3(id.xy, 0)).rgb;
@@ -854,6 +861,19 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
         return;
     }
 
+    uint proxyW, proxyH;
+    gSource.GetDimensions(proxyW, proxyH);
+    const bool modelRanSmall = proxyW != gWidth || proxyH != gHeight;
+    if ((gTransfer == 3 || gTransfer == 4) && (proxyW < gWidth || proxyH < gHeight))
+    {
+        proxy = gPassthrough != 0 ? saturate(original)
+                : (gReversibleMode == 0 ? saturate(SoftKnee(original))
+                   : gReversibleMode >= 3 ? HybridEncode(original) : NeutwoEncode(original));
+        model = NrReconstructModel(proxy, cmpUv, modelSample.rgb);
+        modelDirect = model;
+        proxyLuma = dot(proxy, kLuma);
+    }
+
     float3 edit = model - proxy;
     if (gTransfer == 2)
     {
@@ -877,10 +897,6 @@ void CSMain(uint3 id : SV_DispatchThreadID, uint3 groupId : SV_GroupID, uint3 gr
     // Rebuild the full-resolution proxy and add only the upsampled model difference.
     // Skip ordinary matched residual at native resolution to preserve Classic's exact arithmetic.
     // Residual transfer and cube scaling are adapted from hhkbble's multi-pass contribution.
-    uint proxyW, proxyH;
-    gSource.GetDimensions(proxyW, proxyH);
-    const bool modelRanSmall = proxyW != gWidth || proxyH != gHeight;
-
     if ((gTransfer == 1 && modelRanSmall) || gTransfer == 2)
     {
         // Match the encode's curve, passthrough and saturation before cube-scaling the residual.

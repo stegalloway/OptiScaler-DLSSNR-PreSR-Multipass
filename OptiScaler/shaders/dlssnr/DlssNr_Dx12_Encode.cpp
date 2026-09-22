@@ -296,7 +296,7 @@ DlssNrConstants DlssNr_Dx12::State::MakeResolveConstants(const EncodeContext& co
     resolveParams.DebugView = cfg.DlssNrDebugView.value_or_default();
     resolveParams.MaxRatio = cfg.DlssNrMaxRatio.value_or_default();
     resolveParams.ResidualBlend = std::clamp(cfg.DlssNrShadowFloor.value_or_default(), 0.0f, 1.0f); // gShadowFloor alias
-    resolveParams.Transfer = std::min(cfg.DlssNrTransfer.value_or_default(), 1u);
+    resolveParams.Transfer = DlssNrSpatialTransfer(cfg.DlssNrTransfer.value_or_default());
     resolveParams.DebugScale = cfg.DlssNrWhitePointScale.value_or_default();
     resolveParams.Passthrough = isHdrBuffer ? 0u : 1u;
     resolveParams.ReversibleMode = cfg.DlssNrReversibleMode.value_or_default();
@@ -334,6 +334,7 @@ DlssNrConstants DlssNr_Dx12::State::MakeResolveConstants(const EncodeContext& co
                  "{:.1f}x, colour transform {}, transfer {}, model {}x{}, passes {}, debug view {}, compare {}",
                  composeNow.whitePoint, composeNow.transfer, composeNow.colour, composeNow.maxRatio,
                  composeNow.passthrough != 0 ? "off (frame already tone mapped)" : "on (linear HDR)",
+                 composeNow.residual == 3 ? "lighting + colour" :
                  composeNow.residual == 1 ? "matched residual" : "classic", composeNow.workW, composeNow.workH,
                  composeNow.passes, composeNow.debugView, composeNow.compareMode);
     }
