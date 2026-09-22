@@ -18,6 +18,7 @@
 //   Resolve  proxy + model answer + untouched copy -> the frame, edited
 
 #include "DlssNr_Common.h"
+#include "DlssNr_Spatial.h"
 #include <dlssnr/DlssNrFeature_Dx12.h>
 #include <dlssnr/DlssNr_DescriptorSlots.h>
 #include <memory>
@@ -29,7 +30,8 @@
 
 // Bounded descriptor capacity; actual recording/fence completion controls reuse.
 // A model chain reuses its two immutable clamp bindings regardless of pass count.
-#define DLSSNR_NUM_OF_HEAPS 96
+// A maximal spatial frame uses 11 codec dispatches across twelve queued frames.
+#define DLSSNR_NUM_OF_HEAPS 132
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 {
@@ -63,6 +65,8 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     // from the committed one). Null on backends/builds where the residual shader is absent.
     ID3D12PipelineState* _residualPipelineState = nullptr;
     ID3D12PipelineState* _finishedColorPipelineState = nullptr;
+    ID3D12PipelineState* _spatialPipelineState = nullptr;
+    ID3D12PipelineState* _spatialGuidesPipelineState = nullptr;
 
     // Caller holds the owner and state locks. All NR compute shaders share this descriptor layout.
     bool DispatchCompute(ID3D12GraphicsCommandList* cmd, const DlssNrConstants& constants,
@@ -131,4 +135,9 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     bool DispatchResidualPass(ID3D12GraphicsCommandList* InCmdList, const DlssNrConstants& InConstants,
                               ID3D12Resource* InSource, ID3D12Resource* InModel, ID3D12Resource* InOriginal,
                               ID3D12Resource* InMotion, ID3D12Resource* OutTarget, bool finishedColor = false);
+
+    bool SpatialReady();
+    bool DispatchSpatial(ID3D12GraphicsCommandList* cmd, const DlssNr::Spatial::Constants& constants,
+                         ID3D12Resource* source, ID3D12Resource* depthOrAnswer, ID3D12Resource* motion,
+                         ID3D12Resource* target, ID3D12Resource* secondary = nullptr);
 };

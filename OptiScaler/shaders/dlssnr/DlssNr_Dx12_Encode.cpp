@@ -182,9 +182,11 @@ bool DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
     if (!shader.DispatchPass(cmdList, encodeParams, target, nullptr, nullptr, context.exposure, nullptr,
                              nr.colorCopy, nr.hdrCopy))
     {
+        context.encodeSucceeded = false;
         TransitionTarget(initialTargetState);
         return false; // Both scratch surfaces remain UAV.
     }
+    context.encodeSucceeded = true;
 
     if (targetSupportsUav)
         TransitionTarget(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -198,7 +200,7 @@ bool DlssNr_Dx12::State::EncodeInput(EncodeContext& context)
     // enlarged during the resolve while the frame underneath stays full size and untouched.
     modelInput = nr.colorCopy;
 
-    if (reduced && nr.colorSmall != nullptr)
+    if (reduced && !context.spatial && nr.colorSmall != nullptr)
     {
         bool built = false;
 
