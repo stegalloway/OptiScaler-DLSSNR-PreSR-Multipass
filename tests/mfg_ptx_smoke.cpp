@@ -276,6 +276,14 @@ int main()
             Put<uint64_t>(image, slot + profile.descriptorNameOffset, base + 0x1080);
         }
 
+        const Bytes beforePrepare = image;
+        MfgUnlock::Ptx::Plan plan;
+        MfgUnlock::Ptx::Result prepared;
+        CHECK(Prepare(image.data(), plan, prepared));
+        CHECK(plan.slots.size() == 2 && plan.rebuilt != nullptr);
+        CHECK(image == beforePrepare); // no descriptor or gate writes during planning
+        VirtualFree(plan.rebuilt, 0, MEM_RELEASE);
+
         MfgUnlock::Ptx::Result result;
         CHECK(Apply(image.data(), result));
         CHECK(result.redirected == 2);

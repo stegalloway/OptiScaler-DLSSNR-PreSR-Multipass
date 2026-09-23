@@ -434,11 +434,21 @@ struct Result
     std::string detail; // what was done, or why nothing was
 };
 
+struct Plan
+{
+    std::vector<uint64_t*> slots;
+    void* rebuilt = nullptr;
+    size_t originalSize = 0;
+    size_t rebuiltSize = 0;
+    std::string_view descriptorName;
+};
+
 // Replaces the temporal-kernel fatbin in every descriptor that references it. The module carries several
 // identical descriptors in separate tables and there is no telling which the runtime will pick, so all of
 // them are redirected. The rebuild lives in new memory for the rest of the process.
-inline bool Apply(void* image, Result& result)
+inline bool Prepare(void* image, Plan& plan, Result& result)
 {
+    plan = {};
     result = {};
 
     auto* base = static_cast<uint8_t*>(image);
@@ -557,14 +567,33 @@ inline bool Apply(void* image, Result& result)
 
     std::memcpy(mem, rebuilt.data(), rebuilt.size());
 
-    for (uint64_t* slot : slots)
+    plan.slots = std::move(slots);
+    plan.rebuilt = mem;
+    plan.originalSize = fatSize;
+    plan.rebuiltSize = rebuilt.size();
+    plan.descriptorName = selected->descriptorName;
+    result.detail = std::format("prepared {} {} descriptor(s) from a {}-byte fatbin to a {}-byte rebuild",
+                                plan.slots.size(), plan.descriptorName, fatSize, rebuilt.size());
+    return true;
+}
+
+// Legacy stand-alone helper retained for its existing host smoke. Production
+// unlock admission uses Prepare and includes every slot in one gate+kernel
+// transaction; this helper must not be used to claim a safe unlock by itself.
+inline bool Apply(void* image, Result& result)
+{
+    Plan plan;
+    if (!Prepare(image, plan, result))
+        return false;
+
+    for (uint64_t* slot : plan.slots)
     {
         DWORD oldProtect = 0;
 
         if (!VirtualProtect(slot, sizeof(uint64_t), PAGE_READWRITE, &oldProtect))
             continue;
 
-        *slot = reinterpret_cast<uint64_t>(mem);
+        *slot = reinterpret_cast<uint64_t>(plan.rebuilt);
 
         DWORD ignored = 0;
         VirtualProtect(slot, sizeof(uint64_t), oldProtect, &ignored);
@@ -573,15 +602,15 @@ inline bool Apply(void* image, Result& result)
 
     if (result.redirected == 0)
     {
-        VirtualFree(mem, 0, MEM_RELEASE);
+        VirtualFree(plan.rebuilt, 0, MEM_RELEASE);
         result.detail = "no descriptor slot was writable";
         return false;
     }
 
-    result.originalSize = fatSize;
-    result.rebuiltSize = rebuilt.size();
+    result.originalSize = plan.originalSize;
+    result.rebuiltSize = plan.rebuiltSize;
     result.detail = std::format("redirected {} {} descriptor(s) from a {}-byte fatbin to a {}-byte rebuild",
-                                result.redirected, selected->descriptorName, fatSize, rebuilt.size());
+                                result.redirected, plan.descriptorName, plan.originalSize, plan.rebuiltSize);
     return true;
 }
 } // namespace MfgUnlock::Ptx
