@@ -21,6 +21,7 @@
 #include <hooks/D3D12_Hooks.h>
 #include <hooks/Streamline_Hooks.h>
 #include <framegen/dlssg/MfgUnlock.h>
+#include <framegen/dlssg/DlssgEvaluationCountPolicy.h>
 
 #include <dxgi1_4.h>
 #include <shared_mutex>
@@ -52,25 +53,6 @@ static bool ShouldApplyDlssgEvaluationOverride(bool gameDlssgOptionsObserved, FG
                                                FGOutput activeOutput)
 {
     return !gameDlssgOptionsObserved && activeInput != FGInput::DLSSG && activeOutput != FGOutput::DLSSG;
-}
-
-static int ResolveDlssgEvaluationFrameCount(int gameFrameCount, const std::optional<int>& overrideFrameCount,
-                                            int verifiedMaximum, bool trustNativeFrameCount)
-{
-    // Zero means "off" in the menu, but direct NGX evaluation cannot express
-    // that request. Leave the game's value alone and keep the intent pending.
-    if (overrideFrameCount == 0)
-        return gameFrameCount;
-
-    if (overrideFrameCount.has_value() || !trustNativeFrameCount)
-    {
-        const int requestedFrameCount = overrideFrameCount.value_or(gameFrameCount);
-        return std::clamp(requestedFrameCount, 1, std::max(1, verifiedMaximum));
-    }
-
-    // Do not reject a valid native count merely because our cached capability
-    // is absent or stale. Only values supplied by OptiScaler use that bound.
-    return gameFrameCount;
 }
 
 static std::optional<uint64_t> DirectDlssgOverrideGeneration(const std::optional<int>& overrideFrameCount,
@@ -1230,15 +1212,18 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
                 const int verifiedMaximum = ResolveDlssgEvaluationMaximum(state.dlssgMfgMax);
                 // The working PTX provider is unchanged in this caller-only experiment.
                 const int resolvedFrameCount =
-                    ResolveDlssgEvaluationFrameCount(frameCount, overrideFrameCount, verifiedMaximum, true);
+                    ResolveDlssgEvaluationFrameCount(frameCount, overrideFrameCount, verifiedMaximum);
                 if (resolvedFrameCount != frameCount)
                 {
-                    const auto setResult = InParameters->Set("DLSSG.MultiFrameCount", resolvedFrameCount);
-                    if (setResult != NVSDK_NGX_Result_Success)
+                    InParameters->Set("DLSSG.MultiFrameCount", resolvedFrameCount);
+                    int appliedFrameCount = frameCount;
+                    const auto readResult = InParameters->Get("DLSSG.MultiFrameCount", &appliedFrameCount);
+                    if (readResult != NVSDK_NGX_Result_Success || appliedFrameCount != resolvedFrameCount)
                     {
-                        LOG_WARN("DLSSG count override not applied: NGX parameter write failed ({:X})",
-                                 static_cast<unsigned>(setResult));
-                        overrideGeneration.reset();
+                        LOG_ERROR("DLSSG count override cannot be verified; refusing evaluation "
+                                  "(result {:X}, expected {}, actual {})",
+                                  static_cast<unsigned>(readResult), resolvedFrameCount, appliedFrameCount);
+                        return NVSDK_NGX_Result_FAIL_InvalidParameter;
                     }
                     else
                         submittedDlssgFrameCount = resolvedFrameCount;
