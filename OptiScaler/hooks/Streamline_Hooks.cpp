@@ -1104,6 +1104,9 @@ bool StreamlineHooks::hkcommon_slOnPluginLoad(sl::param::IParameters* params, co
 
 sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
 {
+    // Initialise scalar intent when the game first submits FG options, rather
+    // than during interposer setup before swap-chain creation.
+    initializeDlssgOptions();
     // Establish API ownership before entering Streamline. Its downstream NGX
     // evaluations must not independently apply a still-pending UI multiplier.
     gameDlssgOptionsObserved.store(true, std::memory_order_release);
@@ -1922,7 +1925,6 @@ void StreamlineHooks::unhookInterposer()
 // Call it just after sl.interposer's load or if sl.interposer is already loaded
 void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 {
-    initializeDlssgOptions();
     LOG_FUNC();
 
     if (!slInterposer)
