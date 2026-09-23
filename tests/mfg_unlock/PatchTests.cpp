@@ -6,6 +6,16 @@ static bool g_hasDirectSrExport = false;
 static bool g_referenceAcquisitionFails = false;
 static int g_referencesAcquired = 0;
 static int g_referencesReleased = 0;
+static int g_protectCalls = 0;
+static int g_failProtectAt = 0;
+static int g_failProtectAt2 = 0;
+static BOOL TestVirtualProtect(LPVOID address, SIZE_T size, DWORD protection, PDWORD previous)
+{
+    ++g_protectCalls;
+    if (g_protectCalls == g_failProtectAt || g_protectCalls == g_failProtectAt2)
+        return FALSE;
+    return VirtualProtect(address, size, protection, previous);
+}
 static BOOL TestGetModuleHandleExW(DWORD flags, LPCWSTR address, HMODULE* acquired)
 {
     if (reinterpret_cast<HMODULE>(const_cast<LPWSTR>(address)) != g_syntheticModule)
@@ -39,10 +49,12 @@ static FARPROC TestGetProcAddress(HMODULE module, LPCSTR name)
 #define GetProcAddress TestGetProcAddress
 #define GetModuleHandleExW TestGetModuleHandleExW
 #define FreeLibrary TestFreeLibrary
+#define VirtualProtect TestVirtualProtect
 #include "../../OptiScaler/framegen/dlssg/MfgUnlock.cpp"
 #undef GetProcAddress
 #undef GetModuleHandleExW
 #undef FreeLibrary
+#undef VirtualProtect
 #include "../../OptiScaler/scanner/scanner.cpp"
 #include <stdexcept>
 
@@ -128,6 +140,10 @@ int main(int argc, char** argv) try
     g_hasDlssgExport = mode != "sr-only" && mode != "neither-export";
     g_hasDirectSrExport = mode == "sr-only" || mode == "mixed-exports";
     g_referenceAcquisitionFails = mode == "retain-failure";
+    if (mode == "protect-fail-late" || mode == "rollback-incomplete")
+        g_failProtectAt = 3;
+    if (mode == "rollback-incomplete")
+        g_failProtectAt2 = 4;
     MfgUnlock::TryApply(module);
     const bool shouldPatch = mode == "legacy" || mode == "3109";
     if (shouldPatch)
@@ -149,7 +165,18 @@ int main(int argc, char** argv) try
     else
     {
         Expect(MfgUnlock::UnlockedMax() == 0, "Unsupported case advertised MFG");
-        Expect(std::memcmp(memory, before.data(), before.size()) == 0, "Unsupported case modified memory");
+        if (mode != "rollback-incomplete")
+            Expect(std::memcmp(memory, before.data(), before.size()) == 0, "Unsupported case modified memory");
+    }
+    if (mode == "protect-fail-late" || mode == "rollback-incomplete")
+    {
+        const auto status = MfgUnlock::LastStatus();
+        Expect(status.PatchFailed, "Injected transaction failure must be reported");
+        Expect(status.RollbackFailed == (mode == "rollback-incomplete"), "Rollback safety state mismatch");
+        Expect(MfgUnlock::EffectiveMax(5) == 1, "Failed patch must cap effective generated frames at one");
+        Expect(MfgUnlock::LastFailure() == (mode == "rollback-incomplete" ? MfgUnlock::Failure::RollbackFailed
+                                                                     : MfgUnlock::Failure::PatchFailed),
+               "Failure state mismatch");
     }
     if (mode == "retain-failure")
         Expect(g_referencesAcquired == 0 && g_referencesReleased == 0,

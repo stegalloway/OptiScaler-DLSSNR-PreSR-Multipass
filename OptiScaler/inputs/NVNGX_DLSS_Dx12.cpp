@@ -43,7 +43,7 @@ static int ResolveDlssgEvaluationMaximum(const std::optional<int>& nativeMaximum
     const auto safeNativeMaximum = static_cast<unsigned int>(std::max(1, nativeMaximum.value_or(1)));
 #if defined(OPTISCALER_RTX40_MFG)
     MfgUnlock::TryApply();
-    return static_cast<int>(std::max(safeNativeMaximum, MfgUnlock::UnlockedMax()));
+    return static_cast<int>(MfgUnlock::EffectiveMax(safeNativeMaximum));
 #else
     return static_cast<int>(safeNativeMaximum);
 #endif
@@ -1191,10 +1191,25 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
     if (feature == NVSDK_NGX_Feature_FrameGeneration)
     {
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::TryApply();
+        if (MfgUnlock::LastFailure() == MfgUnlock::Failure::RollbackFailed)
+        {
+            LOG_ERROR("DLSSG evaluation refused after incomplete MFG patch rollback");
+            return NVSDK_NGX_Result_Fail;
+        }
+#endif
         evalWithoutFG = 0;
 
         int frameCount = 0;
         InParameters->Get("DLSSG.MultiFrameCount", &frameCount);
+#if defined(OPTISCALER_RTX40_MFG)
+        if (MfgUnlock::LastFailure() == MfgUnlock::Failure::PatchFailed && frameCount > 1)
+        {
+            LOG_ERROR("DLSSG native count exceeds clean patch-failure fallback; refusing evaluation");
+            return NVSDK_NGX_Result_FAIL_InvalidParameter;
+        }
+#endif
 
         // Streamline owns the game's FG options. Do not read or rewrite its NGX
         // count here: the capability cache is updated by Streamline on another

@@ -52,6 +52,8 @@ struct Status
     bool ModuleFound = false; // nvngx_dlssg.dll was loaded
     bool AdvertiseMatched = false;
     bool ValidateMatched = false;
+    bool PatchFailed = false;
+    bool RollbackFailed = false;
     unsigned int KernelsRewritten = 0; // kernel groups relabelled, or descriptors redirected to the PTX rebuild
     TemporalMethod TemporalAttempted = TemporalMethod::None; // what the configuration asked for at load
     std::string TemporalDetail;                              // why the attempt did not land, or what it did
@@ -69,6 +71,9 @@ struct Status
 };
 
 Status LastStatus();
+enum class Failure { None, PatchFailed, RollbackFailed };
+Failure LastFailure();
+unsigned int EffectiveMax(unsigned int nativeMaximum);
 bool EnabledForSession();
 
 // The method [DLSSG] AdaTemporalFix selects right now: Retarget unless it names Ptx. The overlay compares

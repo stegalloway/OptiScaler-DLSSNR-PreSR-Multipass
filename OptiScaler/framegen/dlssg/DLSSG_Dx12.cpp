@@ -26,7 +26,7 @@ static int ResolveDlssgRuntimeMaximum(unsigned int nativeMaximum)
 {
     const auto safeNativeMaximum = std::max(1u, nativeMaximum);
 #if defined(OPTISCALER_RTX40_MFG)
-    return static_cast<int>(std::max(safeNativeMaximum, MfgUnlock::UnlockedMax()));
+    return static_cast<int>(MfgUnlock::EffectiveMax(safeNativeMaximum));
 #else
     return static_cast<int>(safeNativeMaximum);
 #endif
@@ -160,6 +160,11 @@ bool DLSSG_Dx12::CreateSwapchain(IDXGIFactory* factory, ID3D12CommandQueue* cmdQ
 
 #if defined(OPTISCALER_RTX40_MFG)
     MfgUnlock::TryApply();
+    if (MfgUnlock::LastFailure() == MfgUnlock::Failure::RollbackFailed)
+    {
+        LOG_ERROR("DLSSG initialization refused after incomplete MFG patch rollback");
+        return false;
+    }
 #endif
     sl::DLSSGState dlssgState {};
     sl::DLSSGOptions dlssgOptions {};
@@ -371,6 +376,11 @@ bool DLSSG_Dx12::Dispatch()
 
 #if defined(OPTISCALER_RTX40_MFG)
     MfgUnlock::TryApply();
+    if (MfgUnlock::LastFailure() == MfgUnlock::Failure::RollbackFailed)
+    {
+        LOG_ERROR("DLSSG dispatch refused after incomplete MFG patch rollback");
+        return false;
+    }
 #endif
     _maxInterpolationCount = ResolveDlssgRuntimeMaximum(_maxInterpolationCount);
 

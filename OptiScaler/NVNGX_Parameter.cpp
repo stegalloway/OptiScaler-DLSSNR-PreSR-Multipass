@@ -12,7 +12,7 @@
 static int ResolveNvngxAdvertisedMfgMaximum(bool adaMfgActive)
 {
 #if defined(OPTISCALER_RTX40_MFG)
-    return adaMfgActive ? std::max(1, static_cast<int>(MfgUnlock::UnlockedMax())) : 1;
+    return adaMfgActive ? static_cast<int>(MfgUnlock::EffectiveMax(1)) : 1;
 #else
     return 1;
 #endif
@@ -824,7 +824,7 @@ void InitNGXParameters(NVSDK_NGX_Parameter* InParams, API api)
             State::Instance().activeFgNvngx != FGNvngxReplacement::None ? Nvngx_FG::getMaxFakeFramesCount() : 1;
 #if defined(OPTISCALER_RTX40_MFG)
         MfgUnlock::TryApply();
-        countMax = std::max(countMax, static_cast<int>(MfgUnlock::UnlockedMax()));
+        countMax = static_cast<int>(MfgUnlock::EffectiveMax(static_cast<unsigned int>(std::max(1, countMax))));
 #endif
         InParams->Set("DLSSG.MultiFrameCountMax", countMax);
 

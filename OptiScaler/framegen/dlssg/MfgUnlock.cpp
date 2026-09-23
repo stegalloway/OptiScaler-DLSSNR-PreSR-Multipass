@@ -13,6 +13,7 @@
 #include "MfgUnlockFlip.h"
 #include "MfgUnlockPlugin.h"
 #include "MfgUnlockPtx.h"
+#include "MfgUnlockTransaction.h"
 
 #include <mutex>
 #include <tlhelp32.h>
@@ -520,6 +521,174 @@ unsigned int RewriteBlackwellKernels(HMODULE module)
 
     return rewritten;
 }
+struct PatternMatches
+{
+    uintptr_t address = 0;
+    unsigned int count = 0;
+};
+
+PatternMatches FindMatches(HMODULE module, std::string_view pattern)
+{
+    PatternMatches matches;
+    uintptr_t start = 0;
+
+    while (const auto address = scanner::GetAddress(module, pattern, 0, start))
+    {
+        if (matches.count == 0)
+            matches.address = address;
+        ++matches.count;
+        if (matches.count > 1)
+            break;
+        start = address + 1;
+    }
+
+    return matches;
+}
+
+bool BuildGatePlan(HMODULE module, std::vector<MfgUnlock::Transaction::Patch>& plan)
+{
+    const auto advertise309 = FindMatches(module, kAdvertisePattern309);
+    const auto validate309 = FindMatches(module, kValidatePattern309);
+    const auto advertiseLegacy = FindMatches(module, kAdvertisePattern);
+    const auto validateLegacy = FindMatches(module, kValidatePattern);
+
+    const bool exact309 =
+        advertise309.count == 1 && validate309.count == 1 && advertiseLegacy.count == 0 && validateLegacy.count == 0;
+    const bool exactLegacy =
+        advertiseLegacy.count == 1 && validateLegacy.count == 1 && advertise309.count == 0 && validate309.count == 0;
+
+    if (exact309)
+    {
+        const uint8_t advertiseNop[] = { 0x0F, 0x1F, 0x44, 0x00, 0x00, 0x90 };
+        const uint8_t validateAlways[] = { 0xB0, 0x01, 0x90 };
+        return MfgUnlock::Transaction::AddPatch(plan, advertise309.address + 6, advertiseNop) &&
+               MfgUnlock::Transaction::AddPatch(plan, validate309.address + 5, validateAlways);
+    }
+
+    if (exactLegacy)
+    {
+        const uint8_t count[] = { kMaxGeneratedFrames };
+        const uint8_t advertiseNop[] = { 0x0F, 0x1F, 0x40, 0x00 };
+        const uint8_t validateNop[] = { 0x90, 0x90 };
+        return MfgUnlock::Transaction::AddPatch(plan, advertiseLegacy.address + 7, count) &&
+               MfgUnlock::Transaction::AddPatch(plan, advertiseLegacy.address + 17, advertiseNop) &&
+               MfgUnlock::Transaction::AddPatch(plan, validateLegacy.address + 5, validateNop) &&
+               MfgUnlock::Transaction::AddPatch(plan, validateLegacy.address + 9, count);
+    }
+
+    return false;
+}
+
+// Plans every compatible fatbin rewrite without changing the module. A malformed candidate makes the
+// optional kernel mode unsupported; mixing a partial rewrite with unlocked frame-count gates is unsafe.
+bool BuildKernelPlan(HMODULE module, std::vector<MfgUnlock::Transaction::Patch>& plan, unsigned int& containers)
+{
+    auto* base = reinterpret_cast<uint8_t*>(module);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    auto* sections = IMAGE_FIRST_SECTION(nt);
+    const uint8_t magic[] = { 0x50, 0xED, 0x55, 0xBA };
+    containers = 0;
+
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i)
+    {
+        const auto& section = sections[i];
+        if (section.Characteristics & IMAGE_SCN_MEM_EXECUTE)
+            continue;
+
+        uint8_t* start = base + section.VirtualAddress;
+        uint8_t* end = start + section.Misc.VirtualSize;
+        for (uint8_t* cursor = start; cursor < end;)
+        {
+            uint8_t* container = std::search(cursor, end, magic, magic + sizeof(magic));
+            if (container == end)
+                break;
+            cursor = container + 1;
+
+            if (end - container < 16)
+                return false;
+
+            const auto headerSize = *reinterpret_cast<const uint16_t*>(container + 6);
+            const auto fatSize = *reinterpret_cast<const uint64_t*>(container + 8);
+            if (headerSize != 0x10 || fatSize == 0 || fatSize > static_cast<uint64_t>(end - container - 16))
+                return false;
+
+            uint8_t* const containerEnd = container + 16 + fatSize;
+            uint8_t* blackwell = nullptr;
+            size_t blackwellHeader = 0;
+            size_t blackwellPayload = 0;
+            std::vector<uint8_t*> adaImages;
+
+            for (uint8_t* image = container + 16; image < containerEnd;)
+            {
+                const auto remaining = static_cast<uint64_t>(containerEnd - image);
+                if (remaining < kImageArch + sizeof(uint32_t))
+                    return false;
+
+                const auto kind = *reinterpret_cast<const uint16_t*>(image);
+                const auto imageHeader = *reinterpret_cast<const uint32_t*>(image + 4);
+                const auto payload = *reinterpret_cast<const uint64_t*>(image + kImagePayloadSize);
+                const auto arch = *reinterpret_cast<const uint32_t*>(image + kImageArch);
+                if (imageHeader < kImageArch + sizeof(uint32_t) || imageHeader > remaining || payload == 0 ||
+                    payload > remaining - imageHeader)
+                    return false;
+
+                if (kind == 1 && arch == kArchBlackwell)
+                {
+                    if (blackwell != nullptr)
+                        return false;
+                    blackwell = image;
+                    blackwellHeader = imageHeader;
+                    blackwellPayload = static_cast<size_t>(payload);
+                }
+                else if (arch == kArchAda)
+                    adaImages.push_back(image);
+
+                image += imageHeader + payload;
+            }
+
+            if (blackwell == nullptr || adaImages.empty())
+                continue;
+
+            const char from[] = ".target sm_120";
+            const char to[] = ".target sm_89 ";
+            static_assert(sizeof(from) == sizeof(to), "the directive rewrite must not change length");
+
+            uint8_t* body = blackwell + blackwellHeader;
+            uint8_t* bodyEnd = body + blackwellPayload;
+            auto target = std::search(body, bodyEnd, from, from + sizeof(from) - 1);
+            if (target == bodyEnd || std::search(target + 1, bodyEnd, from, from + sizeof(from) - 1) != bodyEnd)
+                return false;
+
+            std::vector<uint8_t> patched(container, containerEnd);
+            std::memcpy(patched.data() + (target - container), to, sizeof(to) - 1);
+            std::memcpy(patched.data() + (blackwell + kImageArch - container), &kArchAda, sizeof(kArchAda));
+            for (auto* image : adaImages)
+                std::memcpy(patched.data() + (image + kImageArch - container), &kArchParked, sizeof(kArchParked));
+
+            if (!MfgUnlock::Transaction::AddPatch(plan, container, patched.data(), patched.size()))
+                return false;
+            ++containers;
+            cursor = containerEnd;
+        }
+    }
+
+    return containers > 0;
+}
+
+bool GuardedBuildRetargetPlan(HMODULE module, std::vector<MfgUnlock::Transaction::Patch>& plan,
+                              unsigned int& containers)
+{
+    __try
+    {
+        return BuildGatePlan(module, plan) && BuildKernelPlan(module, plan, containers);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 } // namespace
 
 void MfgUnlock::TryApply(HMODULE requestedModule)
@@ -573,47 +742,69 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
             GetModuleFileNameW(module, modulePath, MAX_PATH);
             LOG_INFO("MFG unlock: DLSS-G provider {} at {}", g_status.SnippetVersion, wstring_to_string(modulePath));
 
-            // Retargeting and both gates form one feature; a count-only unlock repeats frames. One temporal
-            // method per session, since both edit the same fatbin.
+            // Gates and the selected temporal method form one transaction. A
+            // count-only unlock repeats frames, and a partly redirected PTX
+            // descriptor table cannot be reported as a working unlock.
             const auto method = ConfiguredTemporalMethod();
             g_status.TemporalAttempted = method;
 
+            std::vector<MfgUnlock::Transaction::Patch> plan;
+            unsigned int kernelCount = 0;
+            Ptx::Plan ptxPlan;
+            Ptx::Result ptxResult;
+            bool planned = false;
             if (method == TemporalMethod::Retarget)
+                planned = GuardedBuildRetargetPlan(module, plan, kernelCount);
+            else if (BuildGatePlan(module, plan) && Ptx::Prepare(module, ptxPlan, ptxResult))
             {
-                g_status.KernelsRewritten = RewriteBlackwellKernels(module);
-
-                g_status.TemporalDetail = g_status.KernelsRewritten > 0
-                                              ? "reused the Blackwell interpolation kernel"
-                                              : "no compatible Blackwell interpolation kernel image";
+                const auto rebuiltPointer = reinterpret_cast<uint64_t>(ptxPlan.rebuilt);
+                planned = !ptxPlan.slots.empty();
+                for (auto* slot : ptxPlan.slots)
+                    planned = MfgUnlock::Transaction::AddPatch(plan, reinterpret_cast<uint8_t*>(slot),
+                                                                reinterpret_cast<const uint8_t*>(&rebuiltPointer),
+                                                                sizeof(rebuiltPointer)) && planned;
+                kernelCount = static_cast<unsigned int>(ptxPlan.slots.size());
             }
-            else
+            if (!planned)
             {
-                Ptx::Result ptx;
-
-                Ptx::Apply(module, ptx);
-                g_status.KernelsRewritten = static_cast<unsigned int>(ptx.redirected);
-                g_status.TemporalDetail = ptx.detail;
-
-                if (ptx.redirected > 0)
-                    LOG_INFO("MFG unlock: PTX temporal fix: {}", ptx.detail);
-                else
-                    LOG_WARN("MFG unlock: PTX temporal fix not applied: {}", ptx.detail);
-            }
-
-            if (g_status.KernelsRewritten == 0)
-            {
-                LOG_WARN("MFG unlock: no compatible interpolation kernels; frame-count gates left unchanged");
+                if (ptxPlan.rebuilt)
+                    VirtualFree(ptxPlan.rebuilt, 0, MEM_RELEASE);
+                g_status.TemporalDetail = method == TemporalMethod::Ptx && !ptxResult.detail.empty()
+                                              ? ptxResult.detail
+                                              : "unsupported, malformed or mixed gate/kernel layout; no writes";
+                FreeLibrary(g_retainedProvider);
+                g_retainedProvider = nullptr;
+                LOG_WARN("MFG unlock: {}", g_status.TemporalDetail);
                 return;
             }
-            const bool advertise = PatchAdvertise(module);
-            const bool validate = PatchValidate(module);
-            g_status.AdvertiseMatched = advertise;
-            g_status.ValidateMatched = validate;
 
-            if (advertise && validate)
-                LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames", kMaxGeneratedFrames);
-            else
-                LOG_WARN("MFG unlock: nvngx_dlssg.dll incomplete, advertise {}, validate {}", advertise, validate);
+            const auto result = MfgUnlock::Transaction::ApplyTransaction(plan);
+            if (result != MfgUnlock::Transaction::TransactionResult::Succeeded)
+            {
+                g_status.PatchFailed = true;
+                g_status.RollbackFailed =
+                    result == MfgUnlock::Transaction::TransactionResult::FailedRollbackIncomplete;
+                g_status.TemporalDetail = g_status.RollbackFailed ? "unsafe incomplete rollback; FG refused"
+                                                                  : "patch failed and rolled back";
+                if (!g_status.RollbackFailed)
+                {
+                    if (ptxPlan.rebuilt)
+                        VirtualFree(ptxPlan.rebuilt, 0, MEM_RELEASE);
+                    FreeLibrary(g_retainedProvider);
+                    g_retainedProvider = nullptr;
+                }
+                LOG_WARN("MFG unlock: {}", g_status.TemporalDetail);
+                return;
+            }
+
+            g_status.KernelsRewritten = kernelCount;
+            g_status.AdvertiseMatched = true;
+            g_status.ValidateMatched = true;
+            g_status.TemporalDetail = method == TemporalMethod::Retarget
+                                          ? "complete Blackwell retarget and gate transaction"
+                                          : "complete PTX descriptor and gate transaction";
+            LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames ({})", kMaxGeneratedFrames,
+                     g_status.TemporalDetail);
 
             // A plugin that was loaded first has been waiting for this.
             PatchPluginCeilings();
@@ -685,10 +876,28 @@ void MfgUnlock::OnStreamlinePluginLoaded(HMODULE plugin)
 
 unsigned int MfgUnlock::UnlockedMax()
 {
-    const auto& status = LastStatus();
-
-    return status.AdvertiseMatched && status.ValidateMatched && status.KernelsRewritten > 0
+    std::lock_guard lock(g_mutex);
+    return g_retainedProvider && !g_status.PatchFailed && g_status.AdvertiseMatched &&
+                   g_status.ValidateMatched && g_status.KernelsRewritten > 0
                ? kMaxGeneratedFrames : 0;
+}
+
+unsigned int MfgUnlock::EffectiveMax(unsigned int nativeMaximum)
+{
+    std::lock_guard lock(g_mutex);
+    if (g_status.PatchFailed)
+        return 1;
+    const unsigned int verified = g_retainedProvider && g_status.AdvertiseMatched && g_status.ValidateMatched &&
+                                          g_status.KernelsRewritten > 0
+                                      ? kMaxGeneratedFrames : 0;
+    return std::max(nativeMaximum, verified);
+}
+
+MfgUnlock::Failure MfgUnlock::LastFailure()
+{
+    std::lock_guard lock(g_mutex);
+    return g_status.RollbackFailed ? Failure::RollbackFailed
+                                   : g_status.PatchFailed ? Failure::PatchFailed : Failure::None;
 }
 
 bool MfgUnlock::Pending()

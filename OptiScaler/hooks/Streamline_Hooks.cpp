@@ -1113,6 +1113,11 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     gameDlssgOptionsObserved.store(true, std::memory_order_release);
 #if defined(OPTISCALER_RTX40_MFG)
     MfgUnlock::TryApply();
+    if (MfgUnlock::LastFailure() == MfgUnlock::Failure::RollbackFailed)
+    {
+        LOG_ERROR("DLSSG options refused after incomplete MFG patch rollback");
+        return sl::Result::eErrorInvalidParameter;
+    }
 #endif
     sl::DLSSGOptions newOptions {};
     const auto forwarding = PrepareDlssgOptionsForForwarding(options, newOptions);
@@ -1122,6 +1127,13 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     // caller's storage and extensions instead of forwarding a sliced temporary.
     if (forwarding == DlssgOptionsForwarding::Passthrough)
     {
+#if defined(OPTISCALER_RTX40_MFG)
+        // Unknown ABI storage cannot be rewritten safely. Refuse a multiplier
+        // that exceeds the clean patch-failure fallback instead of guessing.
+        if (MfgUnlock::LastFailure() == MfgUnlock::Failure::PatchFailed &&
+            options.mode != sl::DLSSGMode::eOff && options.numFramesToGenerate > 1)
+            return sl::Result::eErrorInvalidParameter;
+#endif
         const auto result = o_slDLSSGSetOptions(viewport, options);
 #if defined(OPTISCALER_RTX40_MFG)
         MfgUnlock::RecordSetOptions(options.numFramesToGenerate, options.numFramesToGenerate,
@@ -1149,6 +1161,14 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 
     const auto submitOptions = [&]()
     {
+#if defined(OPTISCALER_RTX40_MFG)
+        if (MfgUnlock::LastFailure() == MfgUnlock::Failure::PatchFailed &&
+            newOptions.mode != sl::DLSSGMode::eOff && newOptions.numFramesToGenerate > 1)
+        {
+            newOptions.numFramesToGenerate = 1;
+            countOverrideApplied = false;
+        }
+#endif
         const auto result = o_slDLSSGSetOptions(viewport, newOptions);
 #if defined(OPTISCALER_RTX40_MFG)
         MfgUnlock::RecordSetOptions(options.numFramesToGenerate, newOptions.numFramesToGenerate,
@@ -1223,7 +1243,8 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     if (dlssgPotentiallyActive && state.streamlineVersion >= feature_version { 2, 7, 1 })
     {
 #if defined(OPTISCALER_RTX40_MFG)
-        state.dlssgMfgMax = std::max(state.dlssgMfgMax.value_or(0), static_cast<int>(MfgUnlock::UnlockedMax()));
+        state.dlssgMfgMax = static_cast<int>(MfgUnlock::EffectiveMax(
+            static_cast<unsigned int>(std::max(1, state.dlssgMfgMax.value_or(1)))));
 #endif
 
         // Do not issue an extra GetState here: it consumes the runtime's
@@ -1323,7 +1344,7 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
     // Version 1 has no maximum-count field: retain its ABI boundary.
     if (originalStructVersion >= 2)
     {
-        state.numFramesToGenerateMax = std::max(state.numFramesToGenerateMax, MfgUnlock::UnlockedMax());
+        state.numFramesToGenerateMax = MfgUnlock::EffectiveMax(state.numFramesToGenerateMax);
     }
 #endif
 
@@ -1332,7 +1353,8 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
     // Keeping an earlier MFG limit would allow a later override to use stale data.
     optiState.dlssgMfgMax = nativeMaximum <= static_cast<uint32_t>(INT_MAX) ? static_cast<int>(nativeMaximum) : 0;
 #if defined(OPTISCALER_RTX40_MFG)
-    optiState.dlssgMfgMax = std::max(optiState.dlssgMfgMax.value_or(0), static_cast<int>(MfgUnlock::UnlockedMax()));
+    optiState.dlssgMfgMax = static_cast<int>(MfgUnlock::EffectiveMax(
+        static_cast<unsigned int>(std::max(1, optiState.dlssgMfgMax.value_or(1)))));
 #endif
 
     if (optiState.activeFgInput == FGInput::DLSSG)
