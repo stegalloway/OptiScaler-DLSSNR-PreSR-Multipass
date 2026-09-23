@@ -143,3 +143,16 @@ the game INI. The user's intentional interpolation override of 2 and all
 other settings remain. The installed candidate DLL remains `9023e881` at
 SHA-256 `E293011B287A5B0B7C13514FD05D728A7D85FCEF11686CEEAD1F794BA1A3A342`.
 No source or RDR2/TLOU2 game install was changed by these runtime tests.
+
+## User-reported performance and picture quality
+
+After the Miles trials, the user reported apparently better FPS with no
+visible loss of picture quality, while describing the model setting as 80%.
+The saved INI identifies this as `WorkingScale=0.8`, not model
+`TransferStrength` (which remained 1.24). Spatial compression was also on.
+The log's 2420x1038 model extent is about 52% of the 3360x1440 output's
+pixel area, consistent with less NR model work. This makes a speedup
+plausible, but the sessions changed scene, FG count and optional settings;
+their FPS samples are not a matched benchmark and cannot quantify or assign
+the improvement to any one feature. The no-visible-loss finding is the user's
+observation for the scenes tested, not a general image-quality guarantee.
