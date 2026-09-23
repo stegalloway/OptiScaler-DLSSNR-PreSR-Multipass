@@ -71,7 +71,75 @@ The tested INI has `WorkingScale=0.8`, `SpatialCompression=true` and
 `ColourStrength=0`; the 2420x1038 model extent agrees with the optional 90%
 spatial working layout at that scale. This is evidence of the combined spatial
 configuration during the session, not a controlled image-quality comparison.
-`Transfer=auto` stayed on matched residual, so the new v0.8.8 Transfer 3/4
-lighting-and-colour modes still need a separate visual trial. Miles DLSS-G
+`Transfer=auto` stayed on matched residual in that first session; separate
+Transfer 3/4 trials and their limits are recorded below. Miles DLSS-G
 does not validate the XeFG game-queue path or RDR2/PureDark ownership. This
 documentation-only update does not change the tested `9023e881` binary.
+
+## XeFG and RDR2 ownership audit — 23 September 2026
+
+The v0.8.9 finished-picture route is conditional on OptiScaler owning XeFG's
+app-facing swapchain (`activeFgOutput == XeFG`, no swapchain interop, and the
+presented swapchain matching `currentFGSwapchain`). In that route, NR composition
+uses XeFG's game command queue before the provider's Present; the wrapped
+swapchain path avoids composing the same picture again. The WARP finished-queue
+fixture passed, but it proves ordering/readiness in a synthetic queue test, not
+visual behaviour with a live XeFG provider.
+
+The installed RDR2 module remains the separate PureDark coexistence
+`OptiScaler.asi`, SHA-256
+`1825A7F30350361F312D97B50FE476CDA147F6ADC8ADC083FD3DC30B716491CC`.
+Its latest preserved log (20 September) explicitly records PureDark ownership
+of DXGI, Streamline, Reflex and FG, with OptiScaler retaining NGX SR/NR. The
+currently installed PureDark DLSS-G provider reports 310.9.1; the older
+19 September handoff's 310.1.0 provider warning is historical, not current
+inventory. The provider update does not change presentation ownership.
+
+Therefore neither the Miles DLSS-G session nor this RDR2/PureDark installation
+can validate the XeFG-specific v0.8.9 path. No generic DLL, RDR2 ASI, settings
+or runtime files were changed for this audit. XeFG runtime validation remains
+open for a separate OptiScaler-owned XeFG target; it is not a reason to risk
+the working RDR2 installation.
+
+## Miles Transfer 3 checkpoint — no-smearing report
+
+With the same `9023e881` DLL and spatial compression still enabled at 0.8
+working scale, the game INI was backed up and only `Transfer=auto` was changed
+to `Transfer=3` before launch. The log confirms "transfer lighting + colour",
+NRSTAB PATH READY/ACTIVE, a DLSS-G off/on transition, and normal shutdown.
+`ColourStrength=0` remained, so this probes the lighting/composition route but
+does not establish the full colour-treatment benefit. During gameplay the FG
+interpolation override changed from 3 to 2; the saved final INI differs from
+the pretest control in those two lines. The user confirmed the multiplier
+change was intentional and reported no smearing. This is an
+operational/stability observation, **not** a one-variable image-quality A/B.
+The exact final log and INI are preserved under
+`06_TEST-RESULTS/V085-V088-V089-COMBINED-9023E881-20260923/MILES-TRANSFER3-20260923`.
+
+The Transfer 3 log is 856,855 bytes, SHA-256
+`C667B18900552DD3BDF585C2C9DF626D838747CDB32304760691D3D4F4B6B9BE`;
+the tested INI is SHA-256
+`F35C4A050C7DCCD6E70628EEF83D37548F942A5B0B4648D62DE025E0C8A9EDC7`.
+The user observation, not telemetry alone, establishes the no-smearing verdict.
+
+Transfer 4 then started from this exact saved state: the DLL and the 2-frame
+interpolation override remained unchanged, the DLL/INI/log were verified in
+`05_BACKUPS/MILES-BEFORE-TRANSFER4-9023E881-20260923`, and only `Transfer=3`
+became `Transfer=4`. The log confirms creation of private DLSS SR at
+2688x1152 to 3360x1440, successful evaluation on the producer queue, NRSTAB
+PATH READY/ACTIVE, and FG off/on transitions. No device removal, incomplete
+rollback, or failed first private enlargement evaluation was found. The user
+reported **no smearing or other visual regression**. This validates the tested
+Transfer 4 runtime path in Miles, not its image-quality superiority or XeFG.
+The final log (872,742 bytes) is SHA-256
+`AFAF4B1AC5DDBE453B53A24EA5797D52CAFDA48E5466DBFD196F48CFDFF02A45`;
+the exact tested INI is SHA-256
+`E3E619E8E488DD7C908FC747556FCD7CC208A084BC9C600D21158C03913AABAE`.
+Both are saved under
+`06_TEST-RESULTS/V085-V088-V089-COMBINED-9023E881-20260923/MILES-TRANSFER4-20260923`.
+
+After that test closed, only `Transfer=4` was returned to `Transfer=auto` in
+the game INI. The user's intentional interpolation override of 2 and all
+other settings remain. The installed candidate DLL remains `9023e881` at
+SHA-256 `E293011B287A5B0B7C13514FD05D728A7D85FCEF11686CEEAD1F794BA1A3A342`.
+No source or RDR2/TLOU2 game install was changed by these runtime tests.
