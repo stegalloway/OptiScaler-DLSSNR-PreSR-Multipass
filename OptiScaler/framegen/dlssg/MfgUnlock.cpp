@@ -47,6 +47,10 @@ constexpr std::string_view kValidatePattern309 = "3D B0 01 00 00 0F 93 C0";
 
 MfgUnlock::Status g_status {};
 std::recursive_mutex g_mutex;
+// One provider is admitted per process. Keep a real loader reference after
+// entering the mutation path, including when an older non-transactional helper
+// reports failure after a possible partial write.
+HMODULE g_retainedProvider = nullptr;
 
 // A filename or NGX version string alone can also identify a DirectSR module.
 // Require the DLSS-G-specific export and refuse mixed-export images before any
@@ -532,18 +536,21 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
     {
         if (auto module = requestedModule ? requestedModule : FindProvider(); module != nullptr)
         {
+            HMODULE acquired = nullptr;
+            if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(module),
+                                    &acquired) || acquired != module)
+            {
+                if (acquired)
+                    FreeLibrary(acquired);
+                LOG_WARN("MFG unlock: could not retain provider; left unchanged");
+                return;
+            }
             if (!HasExclusiveDlssgExports(module))
             {
+                FreeLibrary(acquired);
                 LOG_WARN("MFG unlock: provider lacks exclusive DLSS-G export identity; left unchanged");
                 return;
             }
-            snippetDone = true;
-            g_status.ModuleFound = true;
-            g_status.SnippetVersion = ModuleVersion(module);
-
-            wchar_t modulePath[MAX_PATH] {};
-            GetModuleFileNameW(module, modulePath, MAX_PATH);
-            LOG_INFO("MFG unlock: DLSS-G provider {} at {}", g_status.SnippetVersion, wstring_to_string(modulePath));
 
             // Validate both gates before touching either. Ambiguous/unknown versions remain unmodified.
             const bool knownGates =
@@ -551,10 +558,20 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
                 (UniqueAddress(module, kAdvertisePattern) && UniqueAddress(module, kValidatePattern));
             if (!knownGates)
             {
+                FreeLibrary(acquired);
                 LOG_WARN("MFG unlock: unsupported or ambiguous DLSSG {} signatures; left unchanged",
-                         g_status.SnippetVersion);
+                         ModuleVersion(module));
                 return;
             }
+
+            g_retainedProvider = acquired;
+            snippetDone = true;
+            g_status.ModuleFound = true;
+            g_status.SnippetVersion = ModuleVersion(module);
+
+            wchar_t modulePath[MAX_PATH] {};
+            GetModuleFileNameW(module, modulePath, MAX_PATH);
+            LOG_INFO("MFG unlock: DLSS-G provider {} at {}", g_status.SnippetVersion, wstring_to_string(modulePath));
 
             // Retargeting and both gates form one feature; a count-only unlock repeats frames. One temporal
             // method per session, since both edit the same fatbin.

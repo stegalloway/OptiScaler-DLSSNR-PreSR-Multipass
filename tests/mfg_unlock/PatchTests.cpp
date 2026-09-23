@@ -3,6 +3,29 @@
 static HMODULE g_syntheticModule = nullptr;
 static bool g_hasDlssgExport = true;
 static bool g_hasDirectSrExport = false;
+static bool g_referenceAcquisitionFails = false;
+static int g_referencesAcquired = 0;
+static int g_referencesReleased = 0;
+static BOOL TestGetModuleHandleExW(DWORD flags, LPCWSTR address, HMODULE* acquired)
+{
+    if (reinterpret_cast<HMODULE>(const_cast<LPWSTR>(address)) != g_syntheticModule)
+        return GetModuleHandleExW(flags, address, acquired);
+    if ((flags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) == 0 || g_referenceAcquisitionFails)
+    {
+        *acquired = nullptr;
+        return FALSE;
+    }
+    *acquired = g_syntheticModule;
+    ++g_referencesAcquired;
+    return TRUE;
+}
+static BOOL TestFreeLibrary(HMODULE module)
+{
+    if (module != g_syntheticModule)
+        return FreeLibrary(module);
+    ++g_referencesReleased;
+    return TRUE;
+}
 static FARPROC TestGetProcAddress(HMODULE module, LPCSTR name)
 {
     if (module != g_syntheticModule)
@@ -14,8 +37,12 @@ static FARPROC TestGetProcAddress(HMODULE module, LPCSTR name)
     return nullptr;
 }
 #define GetProcAddress TestGetProcAddress
+#define GetModuleHandleExW TestGetModuleHandleExW
+#define FreeLibrary TestFreeLibrary
 #include "../../OptiScaler/framegen/dlssg/MfgUnlock.cpp"
 #undef GetProcAddress
+#undef GetModuleHandleExW
+#undef FreeLibrary
 #include "../../OptiScaler/scanner/scanner.cpp"
 #include <stdexcept>
 
@@ -100,6 +127,7 @@ int main(int argc, char** argv) try
     g_syntheticModule = module;
     g_hasDlssgExport = mode != "sr-only" && mode != "neither-export";
     g_hasDirectSrExport = mode == "sr-only" || mode == "mixed-exports";
+    g_referenceAcquisitionFails = mode == "retain-failure";
     MfgUnlock::TryApply(module);
     const bool shouldPatch = mode == "legacy" || mode == "3109";
     if (shouldPatch)
@@ -123,6 +151,13 @@ int main(int argc, char** argv) try
         Expect(MfgUnlock::UnlockedMax() == 0, "Unsupported case advertised MFG");
         Expect(std::memcmp(memory, before.data(), before.size()) == 0, "Unsupported case modified memory");
     }
+    if (mode == "retain-failure")
+        Expect(g_referencesAcquired == 0 && g_referencesReleased == 0,
+               "Failed reference acquisition must not enter mutation path");
+    else if (g_referencesAcquired != 0)
+        Expect(g_referencesAcquired == 1 &&
+                   (g_referencesReleased == (g_retainedProvider == module ? 0 : 1)),
+               "Provider reference must be released before writes or held thereafter");
     VirtualFree(memory, 0, MEM_RELEASE);
     std::cout << "PASS " << mode << '\n';
     return 0;
