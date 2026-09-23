@@ -55,3 +55,23 @@ the XeFG route is not validated merely by a Miles DLSS-G pass.
 
 Source branch: `candidate/v085-reconstruction-spatial-20260923`, worktree
 `GitHub/02_WORKTREES/V085-Reconstruction-Spatial-20260923`.
+
+## Miles result — post-build documentation
+
+The user reported "all good" after the Miles session on 23 September 2026.
+The `9023e881` DLL remains installed and its hash is unchanged. The game closed
+normally; the preserved final log shows MFG's complete PTX transaction,
+NRSTAB PATH READY and ACTIVE, FG off/on, and an orderly GPU-owner drain. The
+final NRSTAB STATUS recorded 7,399 selector frames and 7,388 warm-history
+frames. No device removal, incomplete rollback or rejected DLSSG options were
+found. The exact backup and result paths are in the build candidate's
+`TEST-MANIFEST.md` under `04_BUILDS/CANDIDATES`.
+
+The tested INI has `WorkingScale=0.8`, `SpatialCompression=true` and
+`ColourStrength=0`; the 2420x1038 model extent agrees with the optional 90%
+spatial working layout at that scale. This is evidence of the combined spatial
+configuration during the session, not a controlled image-quality comparison.
+`Transfer=auto` stayed on matched residual, so the new v0.8.8 Transfer 3/4
+lighting-and-colour modes still need a separate visual trial. Miles DLSS-G
+does not validate the XeFG game-queue path or RDR2/PureDark ownership. This
+documentation-only update does not change the tested `9023e881` binary.
