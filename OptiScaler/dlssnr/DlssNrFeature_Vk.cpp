@@ -577,6 +577,12 @@ bool ModelVk::Impl::Evaluate(VkCommandBuffer cmdBuffer, const VkImageInfo& colou
         }
     }
 
+    // Preview the immutable input actually submitted to NR, before spatial unpacking.
+    if (resolve.DebugView == 4)
+    {
+        resolveProxy = modelInput;
+        resolve.DebugView = 1;
+    }
     Transition(cmdBuffer, *resolveProxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Transition(cmdBuffer, *resolveAnswer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     Transition(cmdBuffer, state.keep, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

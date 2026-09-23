@@ -39,6 +39,7 @@ if ($hasUnlock -ne $EnableRtx40Mfg.IsPresent) { throw 'DLL RTX 40 MFG feature do
 $files = @{}
 $files['OptiScaler.dll'] = Join-Path $buildRoot 'OptiScaler.dll'
 $files['docs/V085-V088-V089-COMBINED-CANDIDATE-20260923.md'] = Join-Path $root 'docs/V085-V088-V089-COMBINED-CANDIDATE-20260923.md'
+$files['docs/V085-PREVIEW-FG-FOLLOWUP-20260924.md'] = Join-Path $root 'docs/V085-PREVIEW-FG-FOLLOWUP-20260924.md'
 $files['docs/RELEASE-v0.8.8.md'] = Join-Path $root 'docs/RELEASE-v0.8.8.md'
 $files['docs/RELEASE-v0.8.6.md'] = Join-Path $root 'docs/RELEASE-v0.8.6.md'
 $files['docs/RELEASE-v0.8.5.md'] = Join-Path $root 'docs/RELEASE-v0.8.5.md'

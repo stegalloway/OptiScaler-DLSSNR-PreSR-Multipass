@@ -641,7 +641,7 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         bool enlargementReady = !spatialDownFailed;
         const auto transfer = cfg.DlssNrTransfer.value_or_default();
         bool resizeFieldReadable = false;
-        if (!spatialDownFailed && DlssNrUsesDlssEnlargement(transfer) && reduced &&
+        if (resolveParams.DebugView != 4 && !spatialDownFailed && DlssNrUsesDlssEnlargement(transfer) && reduced &&
             (transfer == 2 || workScale < 1.0f))
         {
             auto* enlarged = EnlargeMatchedResidual(cmdList, device, ordinaryProxy, ordinaryAnswer,
@@ -667,6 +667,13 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         {
             ReleaseEnlarger();
             enlargementStatus.clear();
+        }
+
+        // Display the immutable packed model input; ordinary proxy display handles the scaling.
+        if (resolveParams.DebugView == 4)
+        {
+            resolveProxy = modelInput;
+            resolveParams.DebugView = 1;
         }
 
         // Resolve pre-SR inputs without UAV support through an owned scratch and copy-back.
