@@ -1,6 +1,7 @@
 #include <pch.h>
 
 #include "Streamline_Hooks.h"
+#include "DlssgOptionsForwarding.h"
 #if defined(OPTISCALER_RTX40_MFG)
 #include <framegen/dlssg/MfgUnlock.h>
 #endif
@@ -1113,11 +1114,13 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 #if defined(OPTISCALER_RTX40_MFG)
     MfgUnlock::TryApply();
 #endif
+    sl::DLSSGOptions newOptions {};
+    const auto forwarding = PrepareDlssgOptionsForForwarding(options, newOptions);
+    if (forwarding == DlssgOptionsForwarding::Invalid)
+        return sl::Result::eErrorInvalidParameter;
     // Unknown versions may have a larger tail than our headers. Preserve the
     // caller's storage and extensions instead of forwarding a sliced temporary.
-    if (options.structVersion == 0)
-        return sl::Result::eErrorInvalidParameter; // No valid known prefix exists.
-    if (options.structVersion > 5)
+    if (forwarding == DlssgOptionsForwarding::Passthrough)
     {
         const auto result = o_slDLSSGSetOptions(viewport, options);
 #if defined(OPTISCALER_RTX40_MFG)
@@ -1138,28 +1141,6 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         }
         return result;
     }
-
-    // Copy only fields present in the caller's version. The last four bytes of
-    // v2/v4 are padding that becomes a real field when promoted to a newer ABI.
-    sl::DLSSGOptions newOptions {};
-    const auto originalStructVersion = options.structVersion;
-
-    if (options.structVersion == 1)
-        memcpy(&newOptions, &options, 104);
-    else if (options.structVersion == 2)
-        memcpy(&newOptions, &options, 108);
-    else if (options.structVersion == 3)
-        memcpy(&newOptions, &options, 112);
-    else if (options.structVersion == 4)
-        memcpy(&newOptions, &options, 116);
-    else if (options.structVersion == 5)
-        memcpy(&newOptions, &options, 120);
-
-    // Diagnostic only: match the known-clean wrapper's v5 promotion for known
-    // v1-v5 callers. We copied only fields present in the caller's ABI into a
-    // zero-initialised destination, so legacy padding cannot become new fields.
-    // This isolates Streamline's version-specific FG path in Miles.
-    newOptions.structVersion = sl::DLSSGOptions {}.structVersion;
 
     auto& state = State::Instance();
     const auto requested = dlssgOptionsState.Read();
