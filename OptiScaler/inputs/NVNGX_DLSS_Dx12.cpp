@@ -57,6 +57,11 @@ static bool ShouldApplyDlssgEvaluationOverride(bool gameDlssgOptionsObserved, FG
 static int ResolveDlssgEvaluationFrameCount(int gameFrameCount, const std::optional<int>& overrideFrameCount,
                                             int verifiedMaximum, bool trustNativeFrameCount)
 {
+    // Zero means "off" in the menu, but direct NGX evaluation cannot express
+    // that request. Leave the game's value alone and keep the intent pending.
+    if (overrideFrameCount == 0)
+        return gameFrameCount;
+
     if (overrideFrameCount.has_value() || !trustNativeFrameCount)
     {
         const int requestedFrameCount = overrideFrameCount.value_or(gameFrameCount);
@@ -65,7 +70,7 @@ static int ResolveDlssgEvaluationFrameCount(int gameFrameCount, const std::optio
 
     // Do not reject a valid native count merely because our cached capability
     // is absent or stale. Only values supplied by OptiScaler use that bound.
-    return std::max(1, gameFrameCount);
+    return gameFrameCount;
 }
 
 static std::optional<uint64_t> DirectDlssgOverrideGeneration(const std::optional<int>& overrideFrameCount,
@@ -1209,26 +1214,41 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
         int frameCount = 0;
         InParameters->Get("DLSSG.MultiFrameCount", &frameCount);
 
-        const int verifiedMaximum = ResolveDlssgEvaluationMaximum(state.dlssgMfgMax);
-        state.dlssgMfgMax = verifiedMaximum;
-
-        // The working PTX provider is unchanged in this caller-only experiment.
-        const bool trustNativeFrameCount = true;
-
-        std::optional<int> overrideFrameCount {};
+        // Streamline owns the game's FG options. Do not read or rewrite its NGX
+        // count here: the capability cache is updated by Streamline on another
+        // thread, and a native zero must remain zero.
+        submittedDlssgFrameCount = frameCount;
         if (ShouldApplyDlssgEvaluationOverride(StreamlineHooks::hasGameDlssgOptions(), state.activeFgInput,
                                                state.activeFgOutput))
         {
             const auto overrides = StreamlineHooks::getDlssgOverrides();
-            overrideFrameCount = overrides.values.generatedFrames;
+            const auto overrideFrameCount = overrides.values.generatedFrames;
             overrideGeneration = DirectDlssgOverrideGeneration(overrideFrameCount, overrides.generation,
                                                                  overrides.values.forceDynamic, overrides.values.dynamicTarget);
+            if (overrideFrameCount.has_value() && overrideFrameCount.value() > 0)
+            {
+                const int verifiedMaximum = ResolveDlssgEvaluationMaximum(state.dlssgMfgMax);
+                // The working PTX provider is unchanged in this caller-only experiment.
+                const int resolvedFrameCount =
+                    ResolveDlssgEvaluationFrameCount(frameCount, overrideFrameCount, verifiedMaximum, true);
+                if (resolvedFrameCount != frameCount)
+                {
+                    const auto setResult = InParameters->Set("DLSSG.MultiFrameCount", resolvedFrameCount);
+                    if (setResult != NVSDK_NGX_Result_Success)
+                    {
+                        LOG_WARN("DLSSG count override not applied: NGX parameter write failed ({:X})",
+                                 static_cast<unsigned>(setResult));
+                        overrideGeneration.reset();
+                    }
+                    else
+                        submittedDlssgFrameCount = resolvedFrameCount;
+                }
+            }
+#if defined(OPTISCALER_RTX40_MFG)
+            else
+                MfgUnlock::TryApply();
+#endif
         }
-        const int resolvedFrameCount =
-            ResolveDlssgEvaluationFrameCount(frameCount, overrideFrameCount, verifiedMaximum, trustNativeFrameCount);
-        if (resolvedFrameCount != frameCount || overrideFrameCount.has_value())
-            InParameters->Set("DLSSG.MultiFrameCount", resolvedFrameCount);
-        submittedDlssgFrameCount = resolvedFrameCount;
 
         float dlssgCameraNear = 0.0f;
         float dlssgCameraFar = 0.0f;

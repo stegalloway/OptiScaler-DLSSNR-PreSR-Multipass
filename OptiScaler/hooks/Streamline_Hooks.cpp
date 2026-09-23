@@ -1107,11 +1107,6 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     // Initialise scalar intent when the game first submits FG options, rather
     // than during interposer setup before swap-chain creation.
     initializeDlssgOptions();
-    static thread_local unsigned diagnosticOptionsCalls = 0;
-    const bool diagnosticTrace = diagnosticOptionsCalls++ < 8;
-    if (diagnosticTrace)
-        LOG_INFO("FG_CALLER_TRACE incoming version={} mode={} frames={}", options.structVersion,
-                 magic_enum::enum_name(options.mode), options.numFramesToGenerate);
     // Establish API ownership before entering Streamline. Its downstream NGX
     // evaluations must not independently apply a still-pending UI multiplier.
     gameDlssgOptionsObserved.store(true, std::memory_order_release);
@@ -1160,11 +1155,8 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     else if (options.structVersion == 5)
         memcpy(&newOptions, &options, 120);
 
-    // Diagnostic only: restore the known-good wrapper's v5 promotion for known
-    // v1..v5 callers. The destination was zero-initialised and only fields from
-    // the caller's actual version were copied above; no legacy padding is read.
-    // This isolates the runtime's version-specific FG path in Miles.
-    newOptions.structVersion = sl::DLSSGOptions {}.structVersion;
+    // Preserve the caller's ABI unless Dynamic MFG requires the v5 fields.
+    newOptions.structVersion = originalStructVersion;
 
     auto& state = State::Instance();
     const auto requested = dlssgOptionsState.Read();
@@ -1174,10 +1166,6 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     const auto submitOptions = [&]()
     {
         const auto result = o_slDLSSGSetOptions(viewport, newOptions);
-        if (diagnosticTrace)
-            LOG_INFO("FG_CALLER_TRACE submitted version={} mode={} frames={} result={}", newOptions.structVersion,
-                     magic_enum::enum_name(newOptions.mode), newOptions.numFramesToGenerate,
-                     magic_enum::enum_name(result));
 #if defined(OPTISCALER_RTX40_MFG)
         MfgUnlock::RecordSetOptions(options.numFramesToGenerate, newOptions.numFramesToGenerate,
                                    newOptions.mode != sl::DLSSGMode::eOff, static_cast<unsigned>(result));
