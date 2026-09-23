@@ -48,6 +48,25 @@ constexpr std::string_view kValidatePattern309 = "3D B0 01 00 00 0F 93 C0";
 MfgUnlock::Status g_status {};
 std::recursive_mutex g_mutex;
 
+// A filename or NGX version string alone can also identify a DirectSR module.
+// Require the DLSS-G-specific export and refuse mixed-export images before any
+// gate or kernel mutation. The transaction port will additionally retain the
+// module while inspecting and patching it.
+bool HasExclusiveDlssgExports(HMODULE module)
+{
+    if (!module)
+        return false;
+    __try
+    {
+        return GetProcAddress(module, "NVSDK_NGX_D3D12_PopulateDeviceParameters_Impl") != nullptr &&
+               GetProcAddress(module, "NVSDK_NGX_DirectSR_Create") == nullptr;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 uintptr_t UniqueAddress(HMODULE module, std::string_view pattern)
 {
     const auto first = scanner::GetAddress(module, pattern);
@@ -513,6 +532,11 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
     {
         if (auto module = requestedModule ? requestedModule : FindProvider(); module != nullptr)
         {
+            if (!HasExclusiveDlssgExports(module))
+            {
+                LOG_WARN("MFG unlock: provider lacks exclusive DLSS-G export identity; left unchanged");
+                return;
+            }
             snippetDone = true;
             g_status.ModuleFound = true;
             g_status.SnippetVersion = ModuleVersion(module);

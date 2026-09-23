@@ -1,6 +1,21 @@
 // Production patcher/scanner against controlled PE images; no NVIDIA code executes.
 #include "Mocks.h"
+static HMODULE g_syntheticModule = nullptr;
+static bool g_hasDlssgExport = true;
+static bool g_hasDirectSrExport = false;
+static FARPROC TestGetProcAddress(HMODULE module, LPCSTR name)
+{
+    if (module != g_syntheticModule)
+        return GetProcAddress(module, name);
+    if (std::strcmp(name, "NVSDK_NGX_D3D12_PopulateDeviceParameters_Impl") == 0)
+        return g_hasDlssgExport ? reinterpret_cast<FARPROC>(&TestGetProcAddress) : nullptr;
+    if (std::strcmp(name, "NVSDK_NGX_DirectSR_Create") == 0)
+        return g_hasDirectSrExport ? reinterpret_cast<FARPROC>(&TestGetProcAddress) : nullptr;
+    return nullptr;
+}
+#define GetProcAddress TestGetProcAddress
 #include "../../OptiScaler/framegen/dlssg/MfgUnlock.cpp"
+#undef GetProcAddress
 #include "../../OptiScaler/scanner/scanner.cpp"
 #include <stdexcept>
 
@@ -82,6 +97,9 @@ int main(int argc, char** argv) try
     if (mode == "malformed") Put<uint64_t>(blackwell + 8, UINT64_MAX);
     const std::vector<uint8_t> before(memory, memory + 0x5000);
     auto module = reinterpret_cast<HMODULE>(memory);
+    g_syntheticModule = module;
+    g_hasDlssgExport = mode != "sr-only" && mode != "neither-export";
+    g_hasDirectSrExport = mode == "sr-only" || mode == "mixed-exports";
     MfgUnlock::TryApply(module);
     const bool shouldPatch = mode == "legacy" || mode == "3109";
     if (shouldPatch)

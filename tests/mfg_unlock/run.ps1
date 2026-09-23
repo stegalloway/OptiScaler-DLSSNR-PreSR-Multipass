@@ -17,7 +17,7 @@ cl /nologo /std:c++20 /EHsc /W4 /DUNICODE /D_UNICODE /DOPTISCALER_RTX40_MFG /I "
 Set-Content -LiteralPath "$out/build.cmd" -Value $build
 & "$out/build.cmd"
 if ($LASTEXITCODE) { throw 'MFG regression build failed' }
-foreach ($case in @('disabled', 'blackwell', 'ampere', 'other-vendor', 'restart', 'missing-gate', 'duplicate-gate', 'unknown', 'no-kernel', 'malformed', 'legacy', '3109')) {
+foreach ($case in @('disabled', 'blackwell', 'ampere', 'other-vendor', 'restart', 'missing-gate', 'duplicate-gate', 'unknown', 'no-kernel', 'malformed', 'legacy', '3109', 'sr-only', 'mixed-exports', 'neither-export')) {
     & "$out/mfg-patch.exe" $case
     if ($LASTEXITCODE) { throw "MFG regression failed: $case" }
 }
