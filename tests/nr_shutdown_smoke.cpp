@@ -2,6 +2,7 @@
 // Only dependencies are counted/mocked; no NGX runtime or GPU is loaded.
 #include <cstdio>
 #include <cstdlib>
+#include <array>
 #include <list>
 #include <map>
 #include <memory>
@@ -18,6 +19,9 @@ constexpr int NVSDK_NGX_Result_Success = 0, NVSDK_NGX_Result_Fail = 1;
 struct ID3D12Device
 {
 };
+struct ID3D12CommandList
+{
+};
 enum class FGInput
 {
     None,
@@ -28,7 +32,7 @@ enum class FGNvngxReplacement
     None,
     Active
 };
-unsigned calls0, calls1, fgCalls, liveNr, destroyedNr, liveAtShutdown, parentDestructions;
+unsigned calls0, calls1, fgCalls, liveNr, destroyedNr, liveAtShutdown, parentDestructions, resetFinishedCalls;
 bool ready = true;
 int stopResult = 0;
 struct FG
@@ -101,6 +105,14 @@ struct NrState
     std::recursive_mutex mutex;
     struct Late
     {
+        struct Commands
+        {
+            ID3D12CommandList* value = nullptr;
+            explicit operator bool() const { return value != nullptr; }
+            ID3D12CommandList* Get() const { return value; }
+        };
+        struct Slot { Commands commands; };
+        std::array<Slot, 4> slots;
         void Cancel() {}
     } late;
 };
@@ -113,6 +125,7 @@ struct DlssNr_Dx12
         --liveNr;
         ++destroyedNr;
     }
+    void ResetFinishedCommands(ID3D12CommandList*) { ++resetFinishedCalls; }
     static void Retire(std::unique_ptr<DlssNr_Dx12>);
 };
 std::recursive_mutex nrOwnersMutex;
@@ -183,7 +196,7 @@ void reset()
     State::Instance().isShuttingDown = false;
     Dx12Contexts.clear();
     RetiredNrOwners().clear();
-    calls0 = calls1 = fgCalls = liveNr = destroyedNr = liveAtShutdown = parentDestructions = 0;
+    calls0 = calls1 = fgCalls = liveNr = destroyedNr = liveAtShutdown = parentDestructions = resetFinishedCalls = 0;
     unloaded = logged = closedLogger = 0;
     ready = true;
     stopResult = 0;
@@ -199,9 +212,12 @@ int main()
 {
     reset();
     Dx12Contexts[1].feature = std::make_unique<Parent>();
+    ID3D12CommandList finishedCommands;
+    Dx12Contexts[1].feature->NeuralRendering->_state->late.slots[0].commands.value = &finishedCommands;
     State::Instance().activeFgNvngx = FGNvngxReplacement::Active;
     expect(NVSDK_NGX_D3D12_Shutdown() == 0, "legacy shutdown failed");
-    expect(calls0 == 1 && calls1 == 0 && fgCalls == 1 && liveAtShutdown == 0 && parentDestructions == 1,
+    expect(calls0 == 1 && calls1 == 0 && fgCalls == 1 && liveAtShutdown == 0 && parentDestructions == 1 &&
+               resetFinishedCalls == 1,
            "runtime shutdown duplicated or ran before NR/parent release");
     expect(!NVNGXProxy::IsDx12Inited() && !DLSSFeatureDx12::_dlssInitedDx12, "init flags not reset");
     NVSDK_NGX_D3D12_Shutdown();
