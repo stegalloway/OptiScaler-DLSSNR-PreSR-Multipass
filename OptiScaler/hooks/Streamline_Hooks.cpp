@@ -1155,8 +1155,11 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     else if (options.structVersion == 5)
         memcpy(&newOptions, &options, 120);
 
-    // Preserve the caller's ABI unless Dynamic MFG requires the v5 fields.
-    newOptions.structVersion = originalStructVersion;
+    // Diagnostic only: match the known-clean wrapper's v5 promotion for known
+    // v1-v5 callers. We copied only fields present in the caller's ABI into a
+    // zero-initialised destination, so legacy padding cannot become new fields.
+    // This isolates Streamline's version-specific FG path in Miles.
+    newOptions.structVersion = sl::DLSSGOptions {}.structVersion;
 
     auto& state = State::Instance();
     const auto requested = dlssgOptionsState.Read();
