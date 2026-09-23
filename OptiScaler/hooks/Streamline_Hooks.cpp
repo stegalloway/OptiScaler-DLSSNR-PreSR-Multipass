@@ -1107,6 +1107,11 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     // Initialise scalar intent when the game first submits FG options, rather
     // than during interposer setup before swap-chain creation.
     initializeDlssgOptions();
+    static thread_local unsigned diagnosticOptionsCalls = 0;
+    const bool diagnosticTrace = diagnosticOptionsCalls++ < 8;
+    if (diagnosticTrace)
+        LOG_INFO("FG_CALLER_TRACE incoming version={} mode={} frames={}", options.structVersion,
+                 magic_enum::enum_name(options.mode), options.numFramesToGenerate);
     // Establish API ownership before entering Streamline. Its downstream NGX
     // evaluations must not independently apply a still-pending UI multiplier.
     gameDlssgOptionsObserved.store(true, std::memory_order_release);
@@ -1167,6 +1172,10 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     const auto submitOptions = [&]()
     {
         const auto result = o_slDLSSGSetOptions(viewport, newOptions);
+        if (diagnosticTrace)
+            LOG_INFO("FG_CALLER_TRACE submitted version={} mode={} frames={} result={}", newOptions.structVersion,
+                     magic_enum::enum_name(newOptions.mode), newOptions.numFramesToGenerate,
+                     magic_enum::enum_name(result));
 #if defined(OPTISCALER_RTX40_MFG)
         MfgUnlock::RecordSetOptions(options.numFramesToGenerate, newOptions.numFramesToGenerate,
                                    newOptions.mode != sl::DLSSGMode::eOff, static_cast<unsigned>(result));
