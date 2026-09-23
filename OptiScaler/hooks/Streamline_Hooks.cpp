@@ -1160,9 +1160,11 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     else if (options.structVersion == 5)
         memcpy(&newOptions, &options, 120);
 
-    // Retain the caller's structVersion so older Streamline runtimes (v1..v3) do not
-    // reject the call with eErrorInvalidParameter, unless Dynamic MFG (v5) is actively requested.
-    newOptions.structVersion = originalStructVersion;
+    // Diagnostic only: restore the known-good wrapper's v5 promotion for known
+    // v1..v5 callers. The destination was zero-initialised and only fields from
+    // the caller's actual version were copied above; no legacy padding is read.
+    // This isolates the runtime's version-specific FG path in Miles.
+    newOptions.structVersion = sl::DLSSGOptions {}.structVersion;
 
     auto& state = State::Instance();
     const auto requested = dlssgOptionsState.Read();
