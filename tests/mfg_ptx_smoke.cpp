@@ -2,6 +2,9 @@
 // redirect on a module image. No GPU and no game needed; the fatbins and the module are built in memory.
 // cl /std:c++20 /EHsc tests/mfg_ptx_smoke.cpp
 #include "../OptiScaler/framegen/dlssg/MfgUnlockPtx.h"
+#define LOG_WARN(...) ((void)0)
+#include "../OptiScaler/framegen/dlssg/MfgUnlockTransaction.h"
+#undef LOG_WARN
 
 #include <cstdio>
 
@@ -282,6 +285,27 @@ int main()
         CHECK(Prepare(image.data(), plan, prepared));
         CHECK(plan.slots.size() == 2 && plan.rebuilt != nullptr);
         CHECK(image == beforePrepare); // no descriptor or gate writes during planning
+
+        // Production admission turns every prepared descriptor into an edit in
+        // the same transaction as the gates; verify both pointers commit together.
+        std::vector<MfgUnlock::Transaction::Patch> descriptorEdits;
+        const uint64_t rebuiltPointer = reinterpret_cast<uint64_t>(plan.rebuilt);
+        for (auto* slot : plan.slots)
+            CHECK(MfgUnlock::Transaction::AddPatch(
+                descriptorEdits, reinterpret_cast<uint8_t*>(slot),
+                reinterpret_cast<const uint8_t*>(&rebuiltPointer), sizeof(rebuiltPointer)));
+        CHECK(descriptorEdits.size() == 2);
+        CHECK(MfgUnlock::Transaction::ApplyTransaction(descriptorEdits) ==
+              MfgUnlock::Transaction::TransactionResult::Succeeded);
+        for (auto* slot : plan.slots)
+        {
+            uint64_t value = 0;
+            std::memcpy(&value, slot, sizeof(value));
+            CHECK(value == rebuiltPointer);
+            const auto offset = reinterpret_cast<uint8_t*>(slot) - image.data();
+            std::memcpy(slot, beforePrepare.data() + offset, sizeof(value));
+        }
+        CHECK(image == beforePrepare);
         VirtualFree(plan.rebuilt, 0, MEM_RELEASE);
 
         MfgUnlock::Ptx::Result result;

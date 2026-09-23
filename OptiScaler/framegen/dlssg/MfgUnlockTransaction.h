@@ -49,14 +49,21 @@ bool AddPatch(std::vector<Patch>& plan, uint8_t* address, const uint8_t* replace
     {
         const auto otherBegin = reinterpret_cast<uintptr_t>(patch.address);
         const auto otherEnd = otherBegin + patch.original.size();
+        if (otherEnd < otherBegin)
+            return false;
         if (begin < otherEnd && otherBegin < end)
             return false;
     }
 
     Patch patch;
     patch.address = address;
-    patch.original.assign(address, address + size);
-    patch.replacement.assign(replacement, replacement + size);
+    patch.original.resize(size);
+    patch.replacement.resize(size);
+    // A stale pointer supplied by a malformed or unloading provider must fail
+    // planning cleanly rather than fault while capturing original bytes.
+    if (!CopyBytes(patch.original.data(), address, size) ||
+        !CopyBytes(patch.replacement.data(), replacement, size))
+        return false;
     plan.push_back(std::move(patch));
     return true;
 }
@@ -149,4 +156,3 @@ TransactionResult ApplyTransaction(std::vector<Patch>& plan)
     return TransactionResult::Succeeded;
 }
 } // namespace MfgUnlock::Transaction
-

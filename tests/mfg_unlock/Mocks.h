@@ -21,8 +21,9 @@ struct TestOption
 };
 struct TestString
 {
-    bool has_value() const { return false; }
-    std::string value_or(const char* fallback) const { return fallback; }
+    std::optional<std::string> value;
+    bool has_value() const { return value.has_value(); }
+    std::string value_or(const char* fallback) const { return value.value_or(fallback); }
 };
 struct TestBoolOr
 {

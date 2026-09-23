@@ -77,16 +77,18 @@ int main(int argc, char** argv) try
     Expect(argc == 2 || argc == 3, "Pass a test case or runtime and DLL path");
     std::string mode = argv[1];
     Config::Instance()->FGDLSSGAdaMfgUnlock.enabled = mode != "disabled";
-    if (mode == "runtime")
+    if (mode == "runtime" || mode == "runtime-ptx")
     {
         Expect(argc == 3, "Pass an installed DLSSG DLL path");
         // Map its image without imports/DllMain; never initialize FG or change the disk file.
         auto module = LoadLibraryExA(argv[2], nullptr, DONT_RESOLVE_DLL_REFERENCES);
         Expect(module != nullptr, "Map installed runtime");
+        if (mode == "runtime-ptx")
+            Config::Instance()->FGDLSSGAdaTemporalFix.value = "Ptx";
         MfgUnlock::TryApply(module);
         const auto status = MfgUnlock::LastStatus();
         std::cout << "Runtime gates " << status.AdvertiseMatched << '/' << status.ValidateMatched
-                  << ", kernel groups " << status.KernelsRewritten << '\n';
+                  << ", kernel groups " << status.KernelsRewritten << ", detail " << status.TemporalDetail << '\n';
         Expect(MfgUnlock::UnlockedMax() == 5, "Installed runtime is not supported by this patch");
         FreeLibrary(module);
         std::cout << "PASS runtime image patch (simulated Ada; no GPU execution)\n";
@@ -103,6 +105,14 @@ int main(int argc, char** argv) try
         Expect(!MfgUnlock::EnabledForSession() && !MfgUnlock::Pending(), "UI enabled a live patch without restart");
         std::cout << "PASS " << mode << '\n'; return 0;
     }
+    if (mode == "plan-invalid-pointer")
+    {
+        std::vector<MfgUnlock::Transaction::Patch> plan;
+        const uint8_t replacement = 5;
+        Expect(!MfgUnlock::Transaction::AddPatch(plan, reinterpret_cast<uint8_t*>(1), &replacement, 1) &&
+                   plan.empty(), "Unreadable patch address must fail during planning without mutation");
+        std::cout << "PASS " << mode << '\n'; return 0;
+    }
     auto* memory = static_cast<uint8_t*>(VirtualAlloc(nullptr, 0x5000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     Expect(memory != nullptr, "VirtualAlloc");
     auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(memory);
@@ -110,16 +120,20 @@ int main(int argc, char** argv) try
     auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(memory + 0x100);
     nt->Signature = IMAGE_NT_SIGNATURE; nt->FileHeader.NumberOfSections = 2;
     nt->FileHeader.SizeOfOptionalHeader = sizeof(IMAGE_OPTIONAL_HEADER64);
+    nt->OptionalHeader.Magic = IMAGE_NT_OPTIONAL_HDR64_MAGIC;
     nt->OptionalHeader.SizeOfImage = 0x5000;
     auto* sections = IMAGE_FIRST_SECTION(nt);
     sections[0].VirtualAddress = 0x1000; sections[0].Misc.VirtualSize = 0x1000;
     sections[0].Characteristics = IMAGE_SCN_MEM_EXECUTE;
     sections[1].VirtualAddress = 0x3000; sections[1].Misc.VirtualSize = 0x1000;
-    const bool newer = mode == "3109";
+    const bool newer = mode == "3109" || mode == "mixed-families";
     Pattern(memory + 0x1100, newer ? kAdvertisePattern309 : kAdvertisePattern);
     if (mode != "missing-gate") Pattern(memory + 0x1200, newer ? kValidatePattern309 : kValidatePattern);
     if (mode == "duplicate-gate") Pattern(memory + 0x1300, kAdvertisePattern);
+    if (mode == "mixed-families") Pattern(memory + 0x1300, kAdvertisePattern);
     if (mode == "unknown") memory[0x1100] = 0;
+    if (mode == "bad-image") nt->OptionalHeader.Magic = 0;
+    if (mode == "bad-section") sections[1].Misc.VirtualSize = 0x3000;
 
     // One complete fatbin: an Ada image and Blackwell PTX with an equal-length target directive.
     auto* container = memory + 0x3000;

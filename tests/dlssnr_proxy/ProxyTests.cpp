@@ -49,6 +49,12 @@ void DlssNr::GpuLifetime::Record(ID3D12GraphicsCommandList*) { impl->pending = t
 std::function<bool()> DlssNr::GpuLifetime::CompletionProbe(ID3D12GraphicsCommandList*)
 { return [] { return CompletionMock::complete; }; }
 void DlssNr::GpuLifetime::Submitted(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*) {}
+DlssNr::GpuSubmission DlssNr::GpuLifetime::BeginSubmission(UINT, ID3D12CommandList* const*)
+{
+    // Proxy tests use the completion seam above; the production token and
+    // fence semantics are exercised by nr_gpu_lifetime_smoke.
+    return {};
+}
 void DlssNr::GpuLifetime::ResetRecording(ID3D12CommandList*) { impl->pending = false; Collect(); }
 void DlssNr::GpuLifetime::BeginGeneration() {} // Recording/fence generations are tested with the real helper.
 void DlssNr::GpuLifetime::Retire(std::function<void()> destroy)

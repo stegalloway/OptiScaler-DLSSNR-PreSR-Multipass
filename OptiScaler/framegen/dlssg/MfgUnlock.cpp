@@ -72,6 +72,10 @@ bool HasExclusiveDlssgExports(HMODULE module)
     }
 }
 
+bool RetainModule(HMODULE raw, HMODULE& held);
+bool ValidProviderImage(HMODULE module);
+HMODULE RetainedCandidate(HMODULE raw);
+
 uintptr_t UniqueAddress(HMODULE module, std::string_view pattern)
 {
     const auto first = scanner::GetAddress(module, pattern);
@@ -103,10 +107,10 @@ std::string ModuleVersion(HMODULE module)
 //
 // TryApply runs on every Streamline call until the snippet is found, so the walk is rate limited. A
 // provider that has not appeared after these few walks is not going to appear through this route.
-HMODULE FindProvider()
+HMODULE FindRetainedProvider()
 {
-    if (auto module = GetModuleHandleW(L"nvngx_dlssg.dll"))
-        return module;
+    if (auto held = RetainedCandidate(GetModuleHandleW(L"nvngx_dlssg.dll")))
+        return held;
 
     static uint64_t nextWalk = 0;
     static unsigned walks = 0;
@@ -124,7 +128,7 @@ HMODULE FindProvider()
     // The marker string is a literal in this DLL, so it has to be excluded from the walk.
     HMODULE self = nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       reinterpret_cast<LPCWSTR>(&FindProvider), &self);
+                       reinterpret_cast<LPCWSTR>(&FindRetainedProvider), &self);
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
 
@@ -132,30 +136,47 @@ HMODULE FindProvider()
         return nullptr;
 
     HMODULE found = nullptr;
+    bool ambiguous = false;
+    unsigned int inspected = 0;
     MODULEENTRY32W entry {};
     entry.dwSize = sizeof(entry);
 
-    for (bool more = Module32FirstW(snapshot, &entry); more && found == nullptr; more = Module32NextW(snapshot, &entry))
+    bool more = Module32FirstW(snapshot, &entry);
+    for (; more && inspected < 1024; more = Module32NextW(snapshot, &entry))
     {
+        ++inspected;
         if (entry.hModule == self)
             continue;
 
-        if (MfgUnlock::Provider::IsProviderPath(entry.szExePath))
+        HMODULE held = RetainedCandidate(entry.hModule);
+        if (!held)
+            continue;
+
+        const bool matches = MfgUnlock::Provider::IsProviderPath(entry.szExePath) ||
+                             MfgUnlock::Provider::ImageContains(held, MfgUnlock::Provider::kMarker);
+        if (!matches)
         {
-            found = entry.hModule;
+            FreeLibrary(held);
             continue;
         }
 
-        // A renamed or relocated snippet: only look inside modules that expose an NGX entry point.
-        if (GetProcAddress(entry.hModule, "NVSDK_NGX_D3D12_PopulateDeviceParameters_Impl") == nullptr &&
-            GetProcAddress(entry.hModule, "NVSDK_NGX_VULKAN_PopulateDeviceParameters_Impl") == nullptr)
-            continue;
-
-        if (MfgUnlock::Provider::ImageContains(entry.hModule, MfgUnlock::Provider::kMarker))
-            found = entry.hModule;
+        if (found)
+        {
+            FreeLibrary(held);
+            ambiguous = true;
+            break;
+        }
+        found = held;
     }
 
     CloseHandle(snapshot);
+    // A truncated walk cannot establish uniqueness either.
+    if (ambiguous || more)
+    {
+        if (found)
+            FreeLibrary(found);
+        return nullptr;
+    }
 
     return found;
 }
@@ -545,6 +566,66 @@ PatternMatches FindMatches(HMODULE module, std::string_view pattern)
     return matches;
 }
 
+// A raw module handle is only a borrowed address. Keep a real loader reference
+// before examining exports, PE headers or any signature bytes.
+bool RetainModule(HMODULE raw, HMODULE& held)
+{
+    held = nullptr;
+    if (!raw || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(raw), &held))
+        return false;
+    if (held == raw)
+        return true;
+    if (held)
+        FreeLibrary(held);
+    held = nullptr;
+    return false;
+}
+
+bool ValidProviderImage(HMODULE module)
+{
+    if (!HasExclusiveDlssgExports(module))
+        return false;
+    __try
+    {
+        const auto* base = reinterpret_cast<const uint8_t*>(module);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < sizeof(IMAGE_DOS_HEADER) ||
+            dos->e_lfanew > 0x100000)
+            return false;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+            nt->FileHeader.NumberOfSections == 0 || nt->FileHeader.NumberOfSections > 96 ||
+            nt->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER64))
+            return false;
+        const size_t size = nt->OptionalHeader.SizeOfImage;
+        const size_t sectionOffset = reinterpret_cast<const uint8_t*>(IMAGE_FIRST_SECTION(nt)) - base;
+        if (size < sizeof(IMAGE_DOS_HEADER) || size > 1024ull * 1024 * 1024 || sectionOffset > size ||
+            nt->FileHeader.NumberOfSections > (size - sectionOffset) / sizeof(IMAGE_SECTION_HEADER))
+            return false;
+        const auto* sections = IMAGE_FIRST_SECTION(nt);
+        for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i)
+            if (sections[i].VirtualAddress > size ||
+                sections[i].Misc.VirtualSize > size - sections[i].VirtualAddress)
+                return false;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+HMODULE RetainedCandidate(HMODULE raw)
+{
+    HMODULE held = nullptr;
+    if (!RetainModule(raw, held))
+        return nullptr;
+    if (ValidProviderImage(held))
+        return held;
+    FreeLibrary(held);
+    return nullptr;
+}
+
 bool BuildGatePlan(HMODULE module, std::vector<MfgUnlock::Transaction::Patch>& plan)
 {
     const auto advertise309 = FindMatches(module, kAdvertisePattern309);
@@ -703,21 +784,25 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
 
     if (!snippetDone)
     {
-        if (auto module = requestedModule ? requestedModule : FindProvider(); module != nullptr)
+        HMODULE acquired = nullptr;
+        if (requestedModule)
         {
-            HMODULE acquired = nullptr;
-            if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(module),
-                                    &acquired) || acquired != module)
+            if (!RetainModule(requestedModule, acquired))
             {
-                if (acquired)
-                    FreeLibrary(acquired);
                 LOG_WARN("MFG unlock: could not retain provider; left unchanged");
                 return;
             }
-            if (!HasExclusiveDlssgExports(module))
+        }
+        else
+            acquired = FindRetainedProvider();
+
+        if (acquired != nullptr)
+        {
+            HMODULE module = acquired;
+            if (!ValidProviderImage(module))
             {
                 FreeLibrary(acquired);
-                LOG_WARN("MFG unlock: provider lacks exclusive DLSS-G export identity; left unchanged");
+                LOG_WARN("MFG unlock: provider identity or image layout invalid; left unchanged");
                 return;
             }
 

@@ -283,6 +283,11 @@ bool DLSSG_Dx12::CreateSwapchain1(IDXGIFactory* factory, ID3D12CommandQueue* cmd
 
 #if defined(OPTISCALER_RTX40_MFG)
     MfgUnlock::TryApply();
+    if (MfgUnlock::LastFailure() == MfgUnlock::Failure::RollbackFailed)
+    {
+        LOG_ERROR("DLSSG initialization refused after incomplete MFG patch rollback");
+        return false;
+    }
 #endif
     sl::DLSSGState dlssgState {};
     sl::DLSSGOptions dlssgOptions {};

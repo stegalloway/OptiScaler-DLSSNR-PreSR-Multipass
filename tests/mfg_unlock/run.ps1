@@ -17,10 +17,22 @@ cl /nologo /std:c++20 /EHsc /W4 /DUNICODE /D_UNICODE /DOPTISCALER_RTX40_MFG /I "
 Set-Content -LiteralPath "$out/build.cmd" -Value $build
 & "$out/build.cmd"
 if ($LASTEXITCODE) { throw 'MFG regression build failed' }
-foreach ($case in @('disabled', 'blackwell', 'ampere', 'other-vendor', 'restart', 'missing-gate', 'duplicate-gate', 'unknown', 'no-kernel', 'malformed', 'legacy', '3109', 'sr-only', 'mixed-exports', 'neither-export', 'retain-failure', 'protect-fail-late', 'rollback-incomplete')) {
+foreach ($case in @('disabled', 'blackwell', 'ampere', 'other-vendor', 'restart', 'plan-invalid-pointer', 'missing-gate', 'duplicate-gate', 'mixed-families', 'unknown', 'bad-image', 'bad-section', 'no-kernel', 'malformed', 'legacy', '3109', 'sr-only', 'mixed-exports', 'neither-export', 'retain-failure', 'protect-fail-late', 'rollback-incomplete')) {
     & "$out/mfg-patch.exe" $case
     if ($LASTEXITCODE) { throw "MFG regression failed: $case" }
 }
+$transactionBuild = @"
+@echo off
+call "$vs/VC/Auxiliary/Build/vcvars64.bat" >nul
+if errorlevel 1 exit /b 1
+cl /nologo /std:c++20 /EHsc /W4 "$PSScriptRoot/TransactionTests.cpp" /Fe:"$out/mfg-transaction.exe" /Fo:"$out/mfg-transaction.obj"
+"@
+Set-Content -LiteralPath "$out/transaction-build.cmd" -Value $transactionBuild
+& "$out/transaction-build.cmd"
+if ($LASTEXITCODE) { throw 'MFG transaction regression build failed' }
+& "$out/mfg-transaction.exe"
+if ($LASTEXITCODE) { throw 'MFG transaction regression failed' }
+Write-Output 'PASS MFG transaction rollback/protection/cache checks'
 # Host checks of the option helpers (provider discovery, plugin ceiling, PTX rewrite, temporal method, flip
 # metering). They compile alone against synthetic PE images; no NVIDIA code executes.
 foreach ($smoke in @('mfg_provider_smoke', 'mfg_ceiling_smoke', 'mfg_ptx_smoke', 'mfg_method_smoke', 'mfg_flipmeter_smoke')) {
