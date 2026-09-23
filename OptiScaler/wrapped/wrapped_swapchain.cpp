@@ -21,6 +21,7 @@
 #include <hooks/Xell_Hooks.h>
 
 #include <magic_enum.hpp>
+#include <mutex>
 
 #ifdef LOW_LATENCY_INPUTS
 #include <low_latency/input/input_antilag2.h>
@@ -47,6 +48,70 @@ static UINT64 _frameCounter = 0;
 static double _lastFrameTime = 0;
 static bool _dx11Device = false;
 static bool _dx12Device = false;
+
+// Matched to the known-good 8b102dec Present timing probe. It is retained here
+// only to control for probe-induced pacing in the FG hardening comparison.
+static void ReportMilesFpsWindow(unsigned renderWidth, unsigned renderHeight, unsigned displayWidth,
+                                 unsigned displayHeight, bool nrRequested, bool fgActive, UINT syncInterval,
+                                 double intervalMs, double beforePresentMs, double presentCallMs)
+{
+    struct Window
+    {
+        double startedMs = 0.0;
+        double intervalSum = 0.0;
+        double beforeSum = 0.0;
+        double presentSum = 0.0;
+        double maxInterval = 0.0;
+        double maxPresent = 0.0;
+        unsigned count = 0;
+        unsigned over33 = 0;
+        unsigned over100 = 0;
+        unsigned width = 0, height = 0, outputWidth = 0, outputHeight = 0;
+        unsigned sync = 0;
+        bool nr = false, fg = false;
+    };
+    static std::mutex mutex;
+    static Window window;
+    std::lock_guard<std::mutex> lock(mutex);
+    const double now = Util::MillisecondsNow();
+    const bool changed = window.count != 0 &&
+                         (window.width != renderWidth || window.height != renderHeight ||
+                          window.outputWidth != displayWidth || window.outputHeight != displayHeight ||
+                          window.nr != nrRequested || window.fg != fgActive || window.sync != syncInterval);
+    if (window.count != 0 && (changed || now - window.startedMs >= 5000.0))
+    {
+        LOG_INFO("MILES_FPS_DIAG render={}x{} output={}x{} nr_requested={} fg_active={} sync={} "
+                 "samples={} interval_mean={:.2f} interval_max={:.2f} fps_from_interval={:.1f} "
+                 "before_present_mean={:.2f} present_call_mean={:.2f} present_call_max={:.2f} "
+                 "interval_over_33ms={} interval_over_100ms={}",
+                 window.width, window.height, window.outputWidth, window.outputHeight,
+                 window.nr ? 1 : 0, window.fg ? 1 : 0, window.sync, window.count,
+                 window.intervalSum / window.count, window.maxInterval,
+                 window.intervalSum > 0.0 ? 1000.0 * window.count / window.intervalSum : 0.0,
+                 window.beforeSum / window.count, window.presentSum / window.count, window.maxPresent,
+                 window.over33, window.over100);
+        window = {};
+    }
+    if (window.count == 0)
+    {
+        window.startedMs = now;
+        window.width = renderWidth;
+        window.height = renderHeight;
+        window.outputWidth = displayWidth;
+        window.outputHeight = displayHeight;
+        window.nr = nrRequested;
+        window.fg = fgActive;
+        window.sync = syncInterval;
+    }
+    ++window.count;
+    window.intervalSum += intervalMs;
+    window.beforeSum += beforePresentMs;
+    window.presentSum += presentCallMs;
+    window.maxInterval = std::max(window.maxInterval, intervalMs);
+    window.maxPresent = std::max(window.maxPresent, presentCallMs);
+    window.over33 += intervalMs > 33.0;
+    window.over100 += intervalMs > 100.0;
+}
 
 const GUID IID_IUnwrappedDXGISwapChain = {
     0xe8a33b4a, 0x1405, 0x424c, { 0xae, 0x88, 0xd, 0x3e, 0x9d, 0x46, 0xc9, 0x14 }
@@ -281,6 +346,8 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         else
             return ((IDXGISwapChain1*) pSwapChain)->Present1(SyncInterval, Flags, pPresentParameters);
     }
+
+    const double diagnosticEntryMs = Util::MillisecondsNow();
 
     // This lock will delay/prevent release of buffers while present is ongoing
     std::shared_lock<std::shared_mutex> dx11wDx12PresentLock(Dx11wDx12Sync::PresentResizeMutex(), std::defer_lock);
@@ -555,10 +622,27 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
     LOG_DEBUG("Calling original present");
 
     // swapchain present
+    const double diagnosticPresentStartMs = Util::MillisecondsNow();
     if (pPresentParameters == nullptr)
         presentResult = pSwapChain->Present(SyncInterval, Flags);
     else
         presentResult = ((IDXGISwapChain1*) pSwapChain)->Present1(SyncInterval, Flags, pPresentParameters);
+    const double diagnosticPresentEndMs = Util::MillisecondsNow();
+
+    if (willPresent && presentResult == S_OK)
+    {
+        auto* feature = State::Instance().currentFeature;
+        auto* currentFg = State::Instance().currentFG;
+        ReportMilesFpsWindow(feature ? feature->RenderWidth() : 0,
+                             feature ? feature->RenderHeight() : 0,
+                             feature ? feature->DisplayWidth() : 0,
+                             feature ? feature->DisplayHeight() : 0,
+                             Config::Instance()->DlssNrEnabled.value_or_default(),
+                             currentFg && currentFg->IsActive() && !currentFg->IsPaused(), SyncInterval,
+                             State::Instance().presentFrameTime,
+                             diagnosticPresentStartMs - diagnosticEntryMs,
+                             diagnosticPresentEndMs - diagnosticPresentStartMs);
+    }
 
     if (presentResult == S_OK)
     {
