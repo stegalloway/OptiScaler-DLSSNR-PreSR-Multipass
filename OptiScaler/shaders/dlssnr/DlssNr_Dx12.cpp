@@ -353,9 +353,11 @@ bool DlssNr_Dx12::DispatchSpatial(ID3D12GraphicsCommandList* cmd, const DlssNr::
                                   ID3D12Resource* source, ID3D12Resource* depthOrAnswer,
                                   ID3D12Resource* motion, ID3D12Resource* target, ID3D12Resource* secondary)
 {
-    static_assert(sizeof(DlssNr::Spatial::Constants) == sizeof(DlssNrConstants));
+    // Spatial's shader reads its own 256-byte prefix. NRSTAB extends the shared codec CBV to
+    // 512 bytes; keep the spatial layout intact and zero the unused tail.
+    static_assert(sizeof(DlssNr::Spatial::Constants) <= sizeof(DlssNrConstants));
     DlssNrConstants bytes {};
-    std::memcpy(&bytes, &constants, sizeof(bytes));
+    std::memcpy(&bytes, &constants, sizeof(constants));
     std::lock_guard ownersLock(nrOwnersMutex);
     std::lock_guard stateLock(_state->mutex);
     auto* pipeline = constants.mode == 101 ? _spatialGuidesPipelineState : _spatialPipelineState;

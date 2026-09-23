@@ -237,7 +237,6 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
                                  0, false, 0.0f, 0.0f);
         return;
     }
-    }
     // The parameter adapter already combined the HDR flag with the active color format.
     const bool isHdrBuffer = frame.ColourIsLinearHdr;
 

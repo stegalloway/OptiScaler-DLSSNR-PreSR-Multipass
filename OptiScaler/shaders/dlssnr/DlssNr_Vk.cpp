@@ -253,13 +253,16 @@ bool DlssNr_Vk::DispatchSpatial(VkCommandBuffer cmd, const DlssNr::Spatial::Cons
                                 VkImageView target, VkImageView keep, VkImageLayout sourceLayout,
                                 VkImageLayout secondLayout, VkImageLayout thirdLayout)
 {
-    static_assert(sizeof(DlssNr::Spatial::Constants) == sizeof(DlssNrConstants));
+    static_assert(sizeof(DlssNr::Spatial::Constants) <= sizeof(DlssNrConstants));
     if (!SpatialReady() || cmd == VK_NULL_HANDLE || target == VK_NULL_HANDLE || !CreateDummy(cmd))
         return false;
 
     const uint32_t slot = _slot;
     _slot = (_slot + 1) % kSlots;
     const VkDeviceSize offset = _slotStride * slot;
+    // The bound CBV range is 512 bytes in this NRSTAB build; spatial consumes only its
+    // 256-byte prefix. Clear the remaining bytes so no prior pass's constants leak through.
+    std::memset((char*) _mappedConstantBuffer + offset, 0, sizeof(DlssNrConstants));
     std::memcpy((char*) _mappedConstantBuffer + offset, &constants, sizeof(constants));
     WriteDescriptors(_descriptorSets[slot], offset, source, second, third, VK_NULL_HANDLE, target, keep,
                      sourceLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, secondLayout, thirdLayout);
