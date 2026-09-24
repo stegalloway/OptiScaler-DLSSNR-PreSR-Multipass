@@ -292,3 +292,55 @@ FrameView SDK service access was probed without game or settings changes but
 returned `FV_SDK_SESSION_IN_PROGRESS` (20) at session start, so there is no
 new external display/GPU timing source yet. No inference about FG GPU time
 may be drawn from those failed preflights.
+
+### Plugin-matched 2x unlock control, 24 September
+
+The first native-2x control on the known-good DLL loaded local `sl.dlss_g`
+2.9.0, whereas the unlocked control loaded downloaded 2.14.0. That is a
+two-variable comparison and does not isolate unlock overhead. A separate
+diagnostic-only branch, `candidate/miles-fg-cost-diagnostic-20260924` at
+`6bbf9a5b`, enables loading the already-downloaded plugin in both controls;
+its build and MFG safety smoke suites passed. Its installed DLL SHA-256 is
+`CF1C08024F98388D40F97A8BF9D36D38E5B55144014D2FB0E0F19438F8074266`.
+The pretest known-good DLL and INI were saved byte-for-byte in
+`05_BACKUPS/MILES-RTX4090-FG-COST-20260924` before installation. This is a
+measurement build, not a proposed replacement main.
+
+The diagnostic controls both selected the same downloaded `sl.dlss_g`
+2.14.0, requested one generated frame (2x total), used render 2248x960 and
+output 3360x1440, had NR requested, and retained full NR working scale.
+Their final INIs differ only in `AdaMfgUnlock=false` versus `true`. Native
+startup reported a one-generated-frame provider limit; unlocked startup
+patched `nvngx_dlssg.dll` 310.9.1 and the OTA plugin ceiling to five, but
+still requested only one generated frame for the matched run. Both reported
+frame latency 2 while FG was active. The diagnostic `fg_active=0` field is
+not authoritative for Streamline-owned DLSS-G; Streamline's interpolation
+state lines confirm it was enabled.
+
+| Settled foreground window | Present calls/s, mean (range) | Approx. base FPS if all 2x frames presented | NR GPU mean | CPU Present-call mean |
+| --- | ---: | ---: | ---: | ---: |
+| Native 2x, 09:30:30-09:31:35 (14 five-second windows) | 113.35 (111.5-115.1) | 56.7 | 5.92-5.96 ms | 0.45-0.50 ms |
+| Unlocked 2x, 09:35:56-09:36:37 (9 five-second windows) | 101.14 (100.3-102.0) | 50.6 | 5.95-5.97 ms | 0.52-0.56 ms |
+
+The user briefly alt-tabbed in the unlocked session. Its background and
+transition windows, approximately 09:35:36-09:35:46, are excluded from the
+table; the native session's later background period is also excluded. The
+remaining difference corresponds to roughly 2.1 ms in *estimated* real-frame
+interval at 2x, not a measured FG kernel cost. The NR GPU and CPU Present
+measurements are too similar to explain it by themselves. The diagnostic
+isolates Streamline plugin selection, but not scene/camera variance or any
+unlock-path changes in provider policy, native kernel behaviour, and pacing.
+Until the scene is confirmed matched and ideally a native-2x return leg
+reproduces the higher rate, do not attribute the difference specifically to
+the PTX transform. No external GPU/display-change trace was available, and
+Present calls do not prove actual displayed-frame count.
+
+Final log evidence in `05_BACKUPS/MILES-RTX4090-FG-COST-20260924`:
+`native2x-matched-plugin-diagnostic-final.log` (SHA-256
+`FE3F1A0619424AF51D1545387270F341FCA67B972A08759A77B9A95C3B55037E`)
+and `unlocked2x-matched-plugin-diagnostic-final.log` (SHA-256
+`233A44DA3CBF4AF0D325C86EDE3AC32E83AE3837296E08BFF1AA32E8B0F142D3`),
+with their matching INIs. The original unlocked 2x/4x/FG-off final log and
+the first local-plugin native snapshot are retained in the same folder to
+show why plugin matching was required. Restore the backed-up known-good DLL
+and original INI after diagnostic testing is complete.
