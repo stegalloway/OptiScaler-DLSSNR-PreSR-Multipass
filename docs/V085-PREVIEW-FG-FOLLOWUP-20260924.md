@@ -145,7 +145,7 @@ cross-queue route in Miles.
   does **not** mean native Streamline DLSS-G was off; the Streamline lines are
   authoritative for that path.
 
-## 4x throughput follow-up: settings-only candidate
+## 4x throughput follow-up: diagnose without reducing detail
 
 The user clarified that NR was on for both the 2x and 4x comparison, and that
 4x was chosen to approach the 240 Hz display's output rate. The 4x NR-on log
@@ -163,14 +163,13 @@ dropped. No claim of exact displayed FPS follows from dividing Presents by
 the requested multiplier.
 
 At 4x, matching 50 base FPS would yield about 200 output FPS, not 240; 240
-requires 60 base FPS. The low-risk experiment is to recover the small
-4x-versus-2x base-FPS difference first, without touching FG kernel or pacing:
-reduce the NR *model resolution* (not model strength) from 100% to 90% while
-keeping 4x, NRSTAB, the current compression layout and other settings fixed.
-This reduces nominal model pixels from 3024x1160 to about 2722x1044 (19%);
-it does not guarantee proportional GPU-time or FPS savings and could soften
-details. The model resources and NRSTAB history rebuild; wait for PATH READY
-before any visual comparison.
+requires 60 base FPS. The observed 2x-to-4x NR-on change is about 50 to 47
+base FPS, or about 1.5 ms per real-frame interval. This is an estimate from
+short, non-identical scene windows and requested multiplier, not a measured
+FG execution time. NR GPU timing (~5.9-6.0 ms) and CPU time inside the
+wrapped Present call (~0.5-0.6 ms) did not rise commensurately. Additional
+FG GPU work, Streamline/Reflex pacing, actual presented-frame count, and
+scene variation remain distinguishable hypotheses.
 
 Miles was closed before editing. The previous INI is preserved as
 `05_BACKUPS/MILES-PREVIEW-FG-FOLLOWUP-20260924/OptiScaler-pre-4x90-20260924.ini`
@@ -179,7 +178,74 @@ Only `OverrideInterpolationCount` changed from 4 to 3 (5x to 4x) and
 `WorkingScale` from auto/100% to 0.900000; a two-line diff verified this.
 The installed DLL remained SHA-256
 `DA7B59B4BFFF42F14B6F15CE0A5D88E94F03452A66860951A04C7491236E988B`.
-The 4x/90% test is **prepared, not yet gameplay-validated**. Pass requires
-meaningful base-FPS or NR-GPU-time improvement in the same Miles scene with
-NRSTAB ACTIVE and no unacceptable detail loss or smearing. Otherwise restore
-the saved INI exactly; no new build is required.
+The user rejected the 90% NR-resolution trade-off before testing: preserve
+full detail. The 4x/90% candidate was **cancelled and never gameplay-tested**.
+With Miles closed, the exact saved INI was copied back and verified to match
+SHA-256 `4E6A660551CD74F04DCC782E245D8BF990A256C951493DE60AFAFDAFE2F75AAF`;
+`WorkingScale=auto` (100%) and `OverrideInterpolationCount=4` (5x total)
+are again installed. The DLL was not changed. No source or installed FG
+kernel has been modified for this investigation.
+
+Next, measure a same-scene NR-on 2x/4x/2x sequence at unchanged model
+resolution, model strength, NRSTAB, DLSS mode, display mode, VSync, frame
+limit, and camera/scene. Allow each switch to settle and capture at least
+15-20 seconds per phase, excluding menus and alt-tab periods. NVIDIA's
+bundled `PresentMon_x64.exe` (FrameViewSDK 1.9.12728) is available for
+non-invasive ETW capture of GPU/presentation and display-change timing;
+preflight with Miles absent produced no CSV, so it still needs an in-game
+capture check. Correlate its phase windows with OptiScaler's NR GPU windows,
+the game's Streamline multiplier transitions, and Steam's base-FPS reading.
+The existing `slDLSSGGetState` result may provide actual presented-frame
+counts; **do not issue extra GetState calls**, because its count is since
+the previous query. Present count divided by requested multiplier is only
+an approximation when generated frames are dropped.
+
+Interpretation gate: higher GPU busy/work per real frame at 4x with similar
+wait behavior supports FG execution cost; unchanged GPU work with longer
+submission/sleep/latency supports pacing; an unfulfilled requested multiplier
+or many dropped frames invalidates simple Present-rate division. If the
+controlled 2x/4x/2x delta does not repeat, treat the earlier ~3 FPS gap as
+scene/session variation. Do not lower NR resolution or detail to answer this
+question. Only consider isolated diagnostic instrumentation if the external
+timing capture cannot separate those causes.
+
+### Matched 2x/4x/2x Miles run, 24 September
+
+Miles was launched with the unchanged installed DLL and full-resolution NR.
+The user held one scene and switched 2x -> 4x -> 2x. The settled log windows
+show approximately:
+
+| Phase | Swapchain Presents/s | Approx. base FPS if all requested frames present | NR GPU mean | CPU Present-call mean |
+| --- | ---: | ---: | ---: | ---: |
+| 2x before | 100.2-101.0 | 50.1-50.5 | 5.95 ms | 0.56-0.57 ms |
+| 4x | 175.9-176.9 | 44.0-44.2 | 5.99-6.01 ms | 0.47-0.49 ms |
+| 2x after | 103.0-104.0 | 51.5-52.0 | 5.92 ms | 0.53-0.54 ms |
+
+The apparent 4x penalty reproduced and reversed in the same run: about
+2.8-3.4 ms per base-frame interval. NRSTAB remained ACTIVE at K=1 and the
+2 px reject gate; render/output sizes remained 2248x960 / 3360x1440.
+Streamline moved its maximum frame latency 2 -> 4 -> 2 at the multiplier
+changes, while OptiScaler's FPS-limit hook logged zero. These observations
+exclude rising NR GPU time, the wrapped CPU Present call, and a 240 Hz output
+ceiling as sufficient explanations. They do not split native DLSS-G GPU work
+from its internal queue/reflex pacing, or prove every requested frame reached
+the display. The native provider was patched for MFG at launch, so both
+phases used that installed provider; no evidence here isolates PTX policy cost.
+
+Saved final logs: `05_BACKUPS/MILES-PREVIEW-FG-FOLLOWUP-20260924/OptiScaler-fa17156d-fg-2x4x2x-20260924-final.log`
+(SHA-256 `312036B51EBF1FCB2618A9C200E9B5F5D99A7AE626E7FF708D8A22DBC6D16341`)
+and `Miles-game-fg-2x4x2x-20260924-final.log`
+(SHA-256 `168FEC9B41CFBC7A976F71FB28D96591CAF6C80EC2D9104E8EF0744B3F4D65D7`).
+Identically hashed active-game snapshots are retained separately. The
+pre-test INI was restored byte-for-byte after Miles closed (SHA-256
+`4E6A660551CD74F04DCC782E245D8BF990A256C951493DE60AFAFDAFE2F75AAF`);
+the post-test INI with `OverrideInterpolationCount=1` is backed up as
+`OptiScaler-post-2x4x2x-test-20260924.ini`. No quality or DLL change remains.
+
+The bundled PresentMon command-line tool exited with code 1 before capture
+even with Miles running, and emitted no CSV or diagnostic text. Therefore no
+external GPU/display timing was obtained. The next evidence boundary is a
+working GPU/presentation trace or a diagnostic-only measurement of Reflex
+sleep and submission waits; the latter alone still cannot measure native
+DLSS-G's GPU execution time. Do not label the ~3 ms as a measured FG kernel
+cost.
