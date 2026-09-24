@@ -62,3 +62,24 @@ successors are already in this v0.8.5-lineage source.
    old build. A Miles pass cannot substitute for this TLOU2 test.
 
 No promotion to a generic main or release is implied by a successful build.
+
+## Build and installation result (same day)
+
+The exact Akane predicate and real DXGI/WARP composition smokes passed. The
+full `tests/run_nr_prerelease.ps1` suite passed. Release/x64 RTX40-MFG built
+successfully with inherited warnings and no errors; the build log is in
+`04_BUILDS/BUILD-LOGS/TLOU2-V085-AKANE-20260924/build.log`.
+Production commit `d0e2c6cb` embeds its own ID in the DLL. The copied ASI
+package and installed `OptiScaler.asi` both have SHA-256
+`D8517B5002054EDFBEFF2B157EE269193CD9B822020F3A438781DCFFB1BA6F2B`.
+The original TLOU2 ASI, INI and three Akane/OptiScaler logs are preserved
+under `05_BACKUPS/TLOU2-BEFORE-V085-AKANE-20260924`; the old ASI SHA-256 is
+`81CBAC92EF760BD589286D3E47936A9AAFE8A249C23FCC8D4F31B46A0713A974`.
+The game INI remains SHA-256
+`80CBB4C71F0DD423D20F0724EAABF8728F8FC34F28389829BB47E48EC6431DD8`.
+The package manifest is at
+`04_BUILDS/CANDIDATES/TLOU2-V085-AKANE-20260924/MANIFEST.md`.
+
+Live TLOU2/Akane acceptance is still pending. No game launch, gameplay
+control, or changes to Akane, NVIDIA, Streamline, Miles, RDR2, or protected
+main occurred during this candidate build and installation.
