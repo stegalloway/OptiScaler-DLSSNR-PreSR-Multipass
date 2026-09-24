@@ -118,10 +118,13 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
     localPref.logLevel = sl::LogLevel::eCount;
     localPref.logMessageCallback = &streamlineLogCallback;
 #if defined(OPTISCALER_RTX40_MFG)
-    // Diagnostic branch only: hold Streamline plugin selection fixed while comparing
-    // native 2x against the RTX 40 unlock. The production build retains the gate.
-    localPref.flags |= sl::PreferenceFlags::eLoadDownloadedPlugins;
-    LOG_INFO("Miles FG cost diagnostic: downloaded Streamline plugins allowed at initialization");
+    // Select downloaded plugins independently of Ada MFG unlock, but honour a
+    // host that disabled OTA (including OptiScaler-owned Streamline sessions).
+    if ((localPref.flags & sl::PreferenceFlags::eAllowOTA) == sl::PreferenceFlags::eAllowOTA)
+    {
+        localPref.flags |= sl::PreferenceFlags::eLoadDownloadedPlugins;
+        LOG_INFO("Streamline: downloaded plugin loading enabled with host OTA permission");
+    }
 #endif
 
     // renderAPI is optional so need to be careful, should only matter for Vulkan
