@@ -118,13 +118,11 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
     localPref.logLevel = sl::LogLevel::eCount;
     localPref.logMessageCallback = &streamlineLogCallback;
 #if defined(OPTISCALER_RTX40_MFG)
-    // Select downloaded plugins independently of Ada MFG unlock, but honour a
-    // host that disabled OTA (including OptiScaler-owned Streamline sessions).
-    if (localPref.flags & sl::PreferenceFlags::eAllowOTA)
-    {
-        localPref.flags |= sl::PreferenceFlags::eLoadDownloadedPlugins;
-        LOG_INFO("Streamline: downloaded plugin loading enabled with host OTA permission");
-    }
+    // Game-side plugin selection is independent of Ada MFG unlock. Streamline
+    // may check for OTA updates even when this loading flag is absent; Miles
+    // requires it explicitly to select the already-downloaded plugin.
+    localPref.flags |= sl::PreferenceFlags::eLoadDownloadedPlugins;
+    LOG_INFO("Streamline: downloaded plugin loading enabled independently of Ada MFG unlock");
 #endif
 
     // renderAPI is optional so need to be careful, should only matter for Vulkan

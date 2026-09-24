@@ -8,11 +8,12 @@ is SHA-256 `DA7B59B4BFFF42F14B6F15CE0A5D88E94F03452A66860951A04C7491236E988B`.
 
 ## Change and boundary
 
-In the RTX40-MFG build, allow loading downloaded Streamline plugins when the
-host already permits OTA updates, **regardless of `AdaMfgUnlock`**. Preserve
-the host's separate OTA permission; do not enable loading in OptiScaler-owned
-Streamline sessions that deliberately disabled OTA. Do not change the MFG
-provider patch, FG count, NR, NRSTAB, exposure, shaders, or game INI.
+In the RTX40-MFG build's game-side Streamline initialization hook, allow
+loading downloaded Streamline plugins **regardless of `AdaMfgUnlock`**. Do
+not alter the separate `eAllowOTA` download flag, the owned StreamlineProxy
+preferences, the MFG provider patch, FG count, NR, NRSTAB, exposure, shaders,
+or the game INI. This is a policy test, not a claim that every game should
+always select the newest cached plugin.
 
 `eAllowOTA` checks/downloads updates; `eLoadDownloadedPlugins` selects
 downloaded plugins for this session. Miles's working build did the former
@@ -45,3 +46,26 @@ standalone policy, not a side effect of the unlock.
    Miles, preserve the final log, restore the exact backed-up DLL and INI,
    verify hashes, and leave the candidate unpromoted. No change reaches main
    without a Miles visual pass; other games remain untested.
+
+## First startup gate — failed before visual testing
+
+The first compiled candidate, `f3548029` (DLL SHA-256
+`DC02D4EE86F1EDC98E876597F8DFFAC827F4717934743D364AD523678DA43CA9`),
+also required the caller's `eAllowOTA` bit before setting
+`eLoadDownloadedPlugins`. Miles's runtime did not pass that bit to this
+hook. Nevertheless Streamline's updater ran, illustrating that the two
+observations cannot be conflated. The startup log said
+`eLoadDownloadedPlugins flag not passed to preferences`, then selected
+local `sl.dlss_g` 2.9.0. This fails gate 3 and is **not** a downloaded-plugin
+or image-quality test. An active log snapshot is preserved as
+`05_BACKUPS/MILES-OTA-INDEPENDENT-20260924/guarded-load-failed-active-snapshot.log`
+(SHA-256 `50AFF8401771DB26E18284977CCAFFF25F1731C2A7D17E14979777B29D24563C`).
+The game was not controlled after launch. Wait for it to close before
+replacing the installed DLL.
+
+The correction is to set only `eLoadDownloadedPlugins` unconditionally in
+the game hook, matching the plugin-matched diagnostic that previously
+selected 2.14.0 with MFG off. The separate OptiScaler-owned StreamlineProxy
+still clears both OTA flags in its own preferences; this is a source-level
+boundary, not a claim of cross-game live validation. Rebuild and rerun
+safety checks before the next Miles startup gate.
