@@ -70,7 +70,7 @@ still clears both OTA flags in its own preferences; this is a source-level
 boundary, not a claim of cross-game live validation. Rebuild and rerun
 safety checks before the next Miles startup gate.
 
-## Corrected startup gate — passed, visual result pending
+## Corrected startup and Miles visual gates — passed
 
 Corrected production commit `2c213e50` built as RTX40-MFG Release/x64 DLL
 SHA-256 `FD38F004FBBB29FBA57458AC1C69C73E688352EA08E722E25C1321341147B770`.
@@ -83,7 +83,33 @@ SHA-256 `F218D87114C14809391EA2EF058F8A156EC88733E8167B1A8A589CCE1B491D6F`.
 The live log reports build `2c213e50`, the independent loading message,
 downloaded `sl.dlss_g` 2.14.0 selected over local 2.9.0, native maximum of
 one generated frame, NRSTAB PATH READY and then ACTIVE. Streamline reported
-FG active with `numFramesToGenerate=1` and a later off/on transition. No MFG
-unlock patch was logged. This establishes plugin selection and native FG
-startup, **not** a visual-quality pass or a measured FPS benefit. Preserve
-the final log and obtain the user's visual verdict before promotion.
+FG active with `numFramesToGenerate=1` and later off/on transitions. No MFG
+unlock patch was logged. The user confirmed the native-2x FG off/on game test
+was clean, with no smearing or freeze. This is a **Miles visual pass**, not a
+cross-game release or a measured FPS benefit. The corrected final log is
+preserved as `05_BACKUPS/MILES-OTA-INDEPENDENT-20260924/corrected-candidate-final-OptiScaler.log`
+(SHA-256 `93F38695D408749A39533D4012BC5402A7DA6E1034575BC99297C2B311EA6324`).
+The final game INI hash still matches the pretest INI, and the installed DLL
+hash still matches the candidate. RDR2 and protected main were not changed.
+
+## HUD state-query caveat from the 11:00:36 recording
+
+The 60-second Miles recording
+`Marvel's Spider-Man  Miles Morales 2026.09.24 - 11.00.36.09.DVR.mp4`
+shows `DLSSG: waiting for Streamline state...` in the OptiScaler HUD at
+approximately 10 seconds and again at the end, **not** merely for one frame
+of the FG transition. The final frame also shows 2x FG and approximately
+90 displayed / 45 base FPS. The Streamline log independently reports FG
+interpolation enabled with one generated frame after the off/on transition.
+Thus the HUD text is not evidence that the downloaded plugin or FG failed.
+
+The HUD text is shown when OptiScaler has recorded active FG options but its
+telemetry flag `stateSeen` is false. `stateSeen` is set only by a successful
+call through the hooked `slDLSSGGetState` path; the HUD does not itself query
+Streamline. In this session the game either did not make such a call through
+that hook or the hook did not observe a successful result. Which of those
+occurred is not established by the existing log. This is a status-telemetry
+coverage/wording issue, not a demonstrated FG runtime failure. A later UI
+polish candidate may distinguish “no state query observed” from “FG waiting”
+without adding state queries, which could have side effects. Do not treat
+the unverified “Streamline presented” value as proof of output count.
