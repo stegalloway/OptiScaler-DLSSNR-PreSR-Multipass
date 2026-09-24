@@ -351,3 +351,36 @@ post-restore SHA-256 values match the pretest values above exactly:
 `DA7B59B4BFFF42F14B6F15CE0A5D88E94F03452A66860951A04C7491236E988B`
 and `4E6A660551CD74F04DCC782E245D8BF990A256C951493DE60AFAFDAFE2F75AAF`.
 The diagnostic DLL is no longer installed.
+
+### Later user-run on the restored working DLL
+
+The user then made a further Miles run. Its final log and INI were preserved
+in `05_BACKUPS/MILES-RTX4090-FG-COST-20260924` as
+`post-restore-user-run-20260924-final.log` (SHA-256
+`96720D1C1716C3F8245668C755140A6DCA752EECB183051DA4FF215564F0CFE8`)
+and the identically named `.ini` (SHA-256
+`F218D87114C14809391EA2EF058F8A156EC88733E8167B1A8A589CCE1B491D6F`).
+The game was closed when inspected. The installed `dxgi.dll` remained the
+protected working binary, SHA-256 `DA7B59B4BFFF42F14B6F15CE0A5D88E94F03452A66860951A04C7491236E988B`.
+The user-edited INI has `OverrideInterpolationCount=1` and
+`AdaMfgUnlock=auto`, where the diagnostic native INI had `false`; the log
+contains no MFG unlock patch. Do not silently overwrite these later user
+settings with the earlier pretest INI.
+
+This run selected the **local** `sl.dlss_g` 2.9.0 plugin, not the downloaded
+2.14.0 plugin in both diagnostic controls. Its settled 10:34:57-10:35:37
+Present-call rate averaged 101.39/s (nine windows, range 100.6-102.0) with
+NR GPU means approximately 5.94-5.97 ms. NRSTAB reported `PATH READY`.
+The older plugin log records FG options calls and a one-generated-frame
+capability but does not emit the 2.14.0 interpolation-state transitions; the
+INI and Present rate alone are not proof of active FG or displayed-frame
+count. User confirmation of FG and scene position is pending.
+
+Crucially, this is **not** the plugin-matched native return leg: it changes
+both the DLL/plugin policy and the unlock setting relative to the unlocked
+diagnostic run. Its near-equality with the unlocked diagnostic rate weakens
+an unqualified claim of unlock overhead, but could reflect plugin choice,
+scene/camera load, or whether FG was active. It does not refute the separate
+same-session 2x->4x->2x multiplier penalty, nor establish its GPU/pacing
+cause. A controlled return leg would require the diagnostic build with the
+downloaded plugin in native 2x, the same scene, and confirmed active FG.
