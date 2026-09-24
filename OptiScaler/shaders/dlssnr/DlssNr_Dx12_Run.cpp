@@ -418,9 +418,32 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         motionIn = nr.spatialMotion;
     }
 
-    // The vectors were scaled to full-frame pixels; the image the model reprojects is the working size.
-    const float mvToWorkX = width != 0 ? (float) workWidth / (float) width : 1.0f;
-    const float mvToWorkY = height != 0 ? (float) workHeight / (float) height : 1.0f;
+    // The game's scale turns its vectors into pixels of the size they are measured in: the render size
+    // for low-resolution vectors, the output size otherwise. The model reprojects an image of the
+    // working size, so convert against that reference -- the DLSS-enlargement path always did. Using
+    // the frame's (output) width here instead halved every vector in a game rendering at half its
+    // output with low-resolution vectors (Onimusha: scale 1920 for a 3840-wide frame gave the model
+    // 1344 where the motion was 2688), at every Model resolution including 100%.
+    const bool renderMotionScale = cfg.DlssNrRenderMotionScale.value_or_default();
+    const unsigned int mvRefW = renderMotionScale && frame.MotionVectorsLowResolution && frame.RenderSubrectWidth
+                                    ? frame.RenderSubrectWidth : width;
+    const unsigned int mvRefH = renderMotionScale && frame.MotionVectorsLowResolution && frame.RenderSubrectHeight
+                                    ? frame.RenderSubrectHeight : height;
+    const float mvToWorkX = mvRefW != 0 ? (float) workWidth / (float) mvRefW : 1.0f;
+    const float mvToWorkY = mvRefH != 0 ? (float) workHeight / (float) mvRefH : 1.0f;
+    {
+        static unsigned int loggedRefW = 0, loggedWorkW = 0;
+        if (loggedRefW != mvRefW || loggedWorkW != workWidth)
+        {
+            loggedRefW = mvRefW;
+            loggedWorkW = workWidth;
+            LOG_INFO("DLSS-NR model motion scale {:.1f} x {:.1f}: game scale {} x {} measured against {}x{} ({}), "
+                     "model {}x{}",
+                     frame.MvScaleX * mvToWorkX, frame.MvScaleY * mvToWorkY, frame.MvScaleX, frame.MvScaleY, mvRefW,
+                     mvRefH, mvRefW != width ? "render size, low-resolution vectors" : "frame size", workWidth,
+                     workHeight);
+        }
+    }
 
     // Below native (and not packed by spatial compression, which brings its own guides), the model
     // was handed a colour at the working size and depth and motion at the frame's size, with only

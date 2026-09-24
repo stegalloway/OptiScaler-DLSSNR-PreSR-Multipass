@@ -300,6 +300,11 @@ class Config
     // guides and the colour it reprojects agree pixel for pixel. Off hands the model full-size
     // guides for a smaller colour, which is what flickered at every scale below 100%.
     CustomOptional<bool> DlssNrMatchGuides { true };
+    // The model's motion-vector scale converts the game's units to model pixels against the size the
+    // vectors are measured in: the render size for low-resolution vectors, the output size otherwise
+    // (the DLSS-enlargement path already did this). Off restores the old output-size reference, which
+    // halved every vector in a game upscaling 2x with low-resolution vectors.
+    CustomOptional<bool> DlssNrRenderMotionScale { true };
     // Passes 2..30 inherit pass 1, except LocalTone defaults to zero.
     struct NrPassOverrides
     {
