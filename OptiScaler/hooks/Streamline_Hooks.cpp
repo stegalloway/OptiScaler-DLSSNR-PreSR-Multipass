@@ -120,7 +120,7 @@ sl::Result StreamlineHooks::hkslInit(const sl::Preferences& pref, uint64_t sdkVe
 #if defined(OPTISCALER_RTX40_MFG)
     // Select downloaded plugins independently of Ada MFG unlock, but honour a
     // host that disabled OTA (including OptiScaler-owned Streamline sessions).
-    if ((localPref.flags & sl::PreferenceFlags::eAllowOTA) == sl::PreferenceFlags::eAllowOTA)
+    if (localPref.flags & sl::PreferenceFlags::eAllowOTA)
     {
         localPref.flags |= sl::PreferenceFlags::eLoadDownloadedPlugins;
         LOG_INFO("Streamline: downloaded plugin loading enabled with host OTA permission");
