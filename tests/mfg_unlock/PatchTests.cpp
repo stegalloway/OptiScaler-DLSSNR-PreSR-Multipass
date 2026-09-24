@@ -1,6 +1,14 @@
 // Production patcher/scanner against controlled PE images; no NVIDIA code executes.
 #include "Mocks.h"
 static HMODULE g_syntheticModule = nullptr;
+static HMODULE g_secondarySyntheticModule = nullptr;
+static std::vector<HMODULE> g_extraSyntheticModules;
+static bool IsSynthetic(HMODULE module)
+{
+    return module == g_syntheticModule || module == g_secondarySyntheticModule ||
+           std::find(g_extraSyntheticModules.begin(), g_extraSyntheticModules.end(), module) !=
+               g_extraSyntheticModules.end();
+}
 static bool g_hasDlssgExport = true;
 static bool g_hasDirectSrExport = false;
 static bool g_referenceAcquisitionFails = false;
@@ -18,27 +26,28 @@ static BOOL TestVirtualProtect(LPVOID address, SIZE_T size, DWORD protection, PD
 }
 static BOOL TestGetModuleHandleExW(DWORD flags, LPCWSTR address, HMODULE* acquired)
 {
-    if (reinterpret_cast<HMODULE>(const_cast<LPWSTR>(address)) != g_syntheticModule)
+    const auto raw = reinterpret_cast<HMODULE>(const_cast<LPWSTR>(address));
+    if (!IsSynthetic(raw))
         return GetModuleHandleExW(flags, address, acquired);
     if ((flags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) == 0 || g_referenceAcquisitionFails)
     {
         *acquired = nullptr;
         return FALSE;
     }
-    *acquired = g_syntheticModule;
+    *acquired = raw;
     ++g_referencesAcquired;
     return TRUE;
 }
 static BOOL TestFreeLibrary(HMODULE module)
 {
-    if (module != g_syntheticModule)
+    if (!IsSynthetic(module))
         return FreeLibrary(module);
     ++g_referencesReleased;
     return TRUE;
 }
 static FARPROC TestGetProcAddress(HMODULE module, LPCSTR name)
 {
-    if (module != g_syntheticModule)
+    if (!IsSynthetic(module))
         return GetProcAddress(module, name);
     if (std::strcmp(name, "NVSDK_NGX_D3D12_PopulateDeviceParameters_Impl") == 0)
         return g_hasDlssgExport ? reinterpret_cast<FARPROC>(&TestGetProcAddress) : nullptr;
@@ -77,7 +86,8 @@ int main(int argc, char** argv) try
     Expect(argc == 2 || argc == 3, "Pass a test case or runtime and DLL path");
     std::string mode = argv[1];
     Config::Instance()->FGDLSSGAdaMfgUnlock.enabled = mode != "disabled";
-    if (mode == "runtime" || mode == "runtime-ptx")
+    const bool runtimeQuality = mode.starts_with("runtime-quality-");
+    if (mode == "runtime" || mode == "runtime-ptx" || runtimeQuality)
     {
         Expect(argc == 3, "Pass an installed DLSSG DLL path");
         // Map its image without imports/DllMain; never initialize FG or change the disk file.
@@ -85,11 +95,77 @@ int main(int argc, char** argv) try
         Expect(module != nullptr, "Map installed runtime");
         if (mode == "runtime-ptx")
             Config::Instance()->FGDLSSGAdaTemporalFix.value = "Ptx";
+        if (runtimeQuality)
+        {
+            const auto qualityPart = mode.substr(std::strlen("runtime-quality-"));
+            Config::Instance()->FGDLSSGAdaQualityMode.value = std::stoi(qualityPart);
+            Config::Instance()->FGDLSSGAdaWarpBlend.enabled = mode.ends_with("-warp");
+        }
+        const bool failClean = mode.ends_with("-fail-clean");
+        const bool failUnsafe = mode.ends_with("-fail-unsafe");
+        const bool badFingerprint = mode.ends_with("-bad-fingerprint");
+        if (badFingerprint)
+        {
+            std::vector<mfgunlock::blackwell::internal::Candidate> candidates;
+            std::string detail;
+            Expect(mfgunlock::blackwell::internal::CollectCandidates(module, candidates, detail) &&
+                       candidates.size() == 3, "Find three unmodified kernel roles for hash rejection test");
+            auto* byte = candidates.front().payload + candidates.front().slot_size - 1;
+            DWORD protection = 0;
+            Expect(VirtualProtect(byte, 1, PAGE_EXECUTE_READWRITE, &protection) != FALSE,
+                   "Make mapped test image writable");
+            *byte ^= 1;
+            DWORD ignored = 0;
+            Expect(VirtualProtect(byte, 1, protection, &ignored) != FALSE,
+                   "Restore mapped test image protection");
+        }
+        const auto imageSize = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+            reinterpret_cast<const uint8_t*>(module) + reinterpret_cast<const IMAGE_DOS_HEADER*>(module)->e_lfanew)
+                                   ->OptionalHeader.SizeOfImage;
+        Expect(imageSize > 0 && imageSize < 0x10000000, "Bound mapped-provider comparison");
+        std::vector<uint8_t> original;
+        if (failClean || badFingerprint)
+            original.assign(reinterpret_cast<const uint8_t*>(module),
+                            reinterpret_cast<const uint8_t*>(module) + imageSize);
+        if (failClean || failUnsafe)
+        {
+            g_failProtectAt = 3; // Fail after earlier transaction writes, never during planning.
+            if (failUnsafe) g_failProtectAt2 = 4; // Refuse the first rollback protection change.
+        }
         MfgUnlock::TryApply(module);
         const auto status = MfgUnlock::LastStatus();
         std::cout << "Runtime gates " << status.AdvertiseMatched << '/' << status.ValidateMatched
-                  << ", kernel groups " << status.KernelsRewritten << ", detail " << status.TemporalDetail << '\n';
+                  << ", kernel groups " << status.KernelsRewritten << ", detail " << status.TemporalDetail
+                  << ", quality " << status.QualityMode << ", warp " << status.QualityWarp
+                  << ", quality detail " << status.QualityDetail << '\n';
+        if (failClean || failUnsafe || badFingerprint)
+        {
+            Expect(MfgUnlock::UnlockedMax() == 0 && MfgUnlock::EffectiveMax(1) == 1,
+                   "Rejected quality transaction must not advertise unlocked FG");
+            if (badFingerprint)
+                Expect(!status.PatchFailed && !status.RollbackFailed,
+                       "Unrecognized provider payload must refuse before writes");
+            else
+                Expect(status.PatchFailed && status.RollbackFailed == failUnsafe,
+                       "Quality transaction failure must distinguish clean and incomplete rollback");
+            if (!original.empty())
+                Expect(std::memcmp(module, original.data(), original.size()) == 0,
+                       "Rejected quality transaction changed provider image");
+            if (failUnsafe)
+                Expect(g_retainedProvider == module, "Unsafe rollback must retain the patched provider");
+            FreeLibrary(module);
+            std::cout << "PASS " << mode << " (mapped provider; no GPU execution)\n";
+            return 0;
+        }
         Expect(MfgUnlock::UnlockedMax() == 5, "Installed runtime is not supported by this patch");
+        if (runtimeQuality)
+        {
+            Expect(status.QualityMode == Config::Instance()->FGDLSSGAdaQualityMode.value,
+                   "Requested quality mode was not recorded");
+            Expect(status.KernelsRewritten == 3, "Quality path did not select all three kernel roles");
+            Expect(status.QualityWarp == (Config::Instance()->FGDLSSGAdaWarpBlend.enabled || status.QualityMode == 4),
+                   "Requested warp path did not commit");
+        }
         FreeLibrary(module);
         std::cout << "PASS runtime image patch (simulated Ada; no GPU execution)\n";
         return 0;
@@ -154,6 +230,109 @@ int main(int argc, char** argv) try
     g_hasDlssgExport = mode != "sr-only" && mode != "neither-export";
     g_hasDirectSrExport = mode == "sr-only" || mode == "mixed-exports";
     g_referenceAcquisitionFails = mode == "retain-failure";
+    if (mode == "second-provider-capacity")
+    {
+        MfgUnlock::TryApply(module);
+        Expect(MfgUnlock::UnlockedMax() == 5, "First provider failed before capacity test");
+        for (size_t i = 1; i < kMaxPatchedProviders + 1; ++i)
+        {
+            auto* next = static_cast<uint8_t*>(VirtualAlloc(nullptr, 0x5000, MEM_RESERVE | MEM_COMMIT,
+                                                            PAGE_READWRITE));
+            Expect(next != nullptr, "Allocate distinct provider at capacity");
+            std::memcpy(next, before.data(), before.size());
+            g_extraSyntheticModules.push_back(reinterpret_cast<HMODULE>(next));
+            MfgUnlock::TryApply(reinterpret_cast<HMODULE>(next));
+            if (i < kMaxPatchedProviders)
+                Expect(MfgUnlock::UnlockedMax() == 5, "Provider under capacity failed");
+            else
+            {
+                Expect(MfgUnlock::UnlockedMax() == 0 && MfgUnlock::EffectiveMax(5) == 1,
+                       "Capacity exhaustion did not fail closed");
+                Expect(std::memcmp(next, before.data(), before.size()) == 0,
+                       "Capacity-exhausted provider was modified");
+            }
+        }
+        Expect(g_referencesAcquired == kMaxPatchedProviders && g_referencesReleased == 0,
+               "Patched modules lost references or exhausted module was retained");
+        for (auto held : g_extraSyntheticModules) VirtualFree(held, 0, MEM_RELEASE);
+        VirtualFree(memory, 0, MEM_RELEASE);
+        std::cout << "PASS " << mode << '\n';
+        return 0;
+    }
+    if (mode == "second-provider" || mode == "second-provider-unsupported" ||
+        mode == "second-provider-fail-clean" || mode == "second-provider-fail-unsafe" ||
+        mode == "second-provider-retain-failure")
+    {
+        auto* second = static_cast<uint8_t*>(VirtualAlloc(nullptr, 0x5000, MEM_RESERVE | MEM_COMMIT,
+                                                         PAGE_READWRITE));
+        Expect(second != nullptr, "Allocate second provider image");
+        std::memcpy(second, before.data(), before.size());
+        g_secondarySyntheticModule = reinterpret_cast<HMODULE>(second);
+        if (mode == "second-provider-unsupported") second[0x1200] = 0;
+        const std::vector<uint8_t> secondBefore(second, second + 0x5000);
+        MfgUnlock::TryApply(module);
+        Expect(MfgUnlock::UnlockedMax() == 5 && g_retainedProvider == module,
+               "First provider did not patch and retain successfully");
+        const std::vector<uint8_t> firstPatched(memory, memory + 0x5000);
+        const bool failClean = mode == "second-provider-fail-clean";
+        const bool failUnsafe = mode == "second-provider-fail-unsafe";
+        if (failClean || failUnsafe)
+        {
+            g_failProtectAt = g_protectCalls + 3;
+            if (failUnsafe) g_failProtectAt2 = g_failProtectAt + 1;
+        }
+        if (mode == "second-provider-retain-failure") g_referenceAcquisitionFails = true;
+        MfgUnlock::TryApply(g_secondarySyntheticModule);
+        if (mode == "second-provider")
+        {
+            Expect(MfgUnlock::UnlockedMax() == 5 && g_retainedProvider == g_secondarySyntheticModule,
+                   "Second provider was not patched and retained");
+            Expect(std::memcmp(second, secondBefore.data(), secondBefore.size()) != 0,
+                   "Second provider remained unpatched");
+            Expect(g_referencesAcquired == 2 && g_referencesReleased == 0,
+                   "Both patched providers must retain loader references");
+            MfgUnlock::TryApply(module);
+            Expect(g_referencesAcquired == 2, "Duplicate provider admission reacquired a reference");
+        }
+        else if (mode == "second-provider-unsupported")
+        {
+            Expect(MfgUnlock::UnlockedMax() == 0 && MfgUnlock::EffectiveMax(5) == 1,
+                   "Unsupported second provider must refuse higher FG globally");
+            Expect(std::memcmp(second, secondBefore.data(), secondBefore.size()) == 0,
+                   "Unsupported second provider changed bytes");
+            Expect(g_referencesReleased == 1 && g_referencesAcquired == 2,
+                   "Unsupported provider's new reference must be released");
+        }
+        else if (mode == "second-provider-retain-failure")
+        {
+            Expect(MfgUnlock::UnlockedMax() == 0 && MfgUnlock::EffectiveMax(5) == 1,
+                   "Unretained second provider still advertised higher FG");
+            Expect(g_referencesAcquired == 1 && g_referencesReleased == 0 &&
+                       std::memcmp(second, secondBefore.data(), secondBefore.size()) == 0,
+                   "Unretained second provider was mutated or prior reference lost");
+        }
+        else
+        {
+            const auto status = MfgUnlock::LastStatus();
+            Expect(MfgUnlock::UnlockedMax() == 0 && MfgUnlock::EffectiveMax(5) == 1 &&
+                       status.PatchFailed && status.RollbackFailed == failUnsafe,
+                   "Second-provider transaction failure did not refuse higher FG");
+            if (failClean)
+                Expect(std::memcmp(second, secondBefore.data(), secondBefore.size()) == 0 &&
+                           g_referencesAcquired == 2 && g_referencesReleased == 1,
+                       "Clean second-provider rollback changed bytes or retained its reference");
+            else
+                Expect(g_referencesAcquired == 2 && g_referencesReleased == 0 &&
+                           g_retainedProvider == g_secondarySyntheticModule,
+                       "Unsafe second-provider rollback lost an affected module reference");
+        }
+        Expect(std::memcmp(memory, firstPatched.data(), firstPatched.size()) == 0,
+               "First provider was altered during second-provider handover");
+        VirtualFree(second, 0, MEM_RELEASE);
+        VirtualFree(memory, 0, MEM_RELEASE);
+        std::cout << "PASS " << mode << '\n';
+        return 0;
+    }
     if (mode == "protect-fail-late" || mode == "rollback-incomplete")
         g_failProtectAt = 3;
     if (mode == "rollback-incomplete")

@@ -451,3 +451,7 @@ release
 
 # Local runtime experiments (not packaged)
 dlssg_for_sm86/
+
+# Locally generated NVIDIA-derived test inputs; never commit provider payloads.
+/OptiScaler/framegen/dlssg/mfgquality/blackwell_cubins.generated.hpp
+/OptiScaler/framegen/dlssg/mfgquality/thin_geometry_cubins.generated.hpp

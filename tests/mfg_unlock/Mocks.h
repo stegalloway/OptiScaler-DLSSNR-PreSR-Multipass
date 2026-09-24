@@ -25,6 +25,11 @@ struct TestString
     bool has_value() const { return value.has_value(); }
     std::string value_or(const char* fallback) const { return value.value_or(fallback); }
 };
+struct TestInt
+{
+    int value = 0;
+    int value_or_default() const { return value; }
+};
 struct TestBoolOr
 {
     bool value_or(bool fallback) const { return fallback; }
@@ -34,6 +39,8 @@ struct Config
     TestOption FGDLSSGAdaMfgUnlock;
     TestString FGDLSSGAdaTemporalFix;
     TestOption FGDLSSGAdaFlipMeteringPatch;
+    TestInt FGDLSSGAdaQualityMode;
+    TestOption FGDLSSGAdaWarpBlend;
     TestBoolOr DisableFlipMetering;
     static Config* Instance() { static Config config; return &config; }
 };

@@ -57,6 +57,9 @@ struct Status
     unsigned int KernelsRewritten = 0; // kernel groups relabelled, or descriptors redirected to the PTX rebuild
     TemporalMethod TemporalAttempted = TemporalMethod::None; // what the configuration asked for at load
     std::string TemporalDetail;                              // why the attempt did not land, or what it did
+    int QualityMode = 0; // 0 current engine, 1-3 legacy A/B, 4 Reno 1.1.5 Adaptive
+    bool QualityWarp = false; // actual requested quality warp path, never inferred from INI alone
+    std::string QualityDetail;
     std::string SnippetVersion; // file version of nvngx_dlssg.dll, empty if it could not be read
 
     // The Streamline DLSS-G plugin's own frame-count clamp. A string literal, empty until a plugin has
@@ -80,8 +83,8 @@ bool EnabledForSession();
 // it with Status::TemporalAttempted to show that a change needs a restart.
 TemporalMethod ConfiguredTemporalMethod();
 
-// Applies the patches once per process. Silent and harmless when the config option is off, when
-// nvngx_dlssg.dll is not loaded, or when a signature does not match exactly once.
+// Patches each distinct supported provider at most once per process, retaining
+// all modified modules. Silent when the option is off or no provider is loaded.
 void TryApply(HMODULE module = nullptr);
 bool Pending();
 

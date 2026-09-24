@@ -114,7 +114,10 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
     // copy (models\dlssg\...\<hash>.bin) as well as the game's nvngx_dlssg.dll, which the .bin branch
     // below would otherwise load without patching.
 #if defined(OPTISCALER_RTX40_MFG)
-    if (MfgUnlock::Provider::IsProviderPath(normalizedPath) && MfgUnlock::Pending())
+    // TryApply deduplicates retained providers and can admit a distinct OTA
+    // image after the base DLL was patched. Pending() is only a UI startup
+    // state; it becomes false after the first provider and must not gate loads.
+    if (MfgUnlock::Provider::IsProviderPath(normalizedPath) && MfgUnlock::EnabledForSession())
     {
         auto snippet = NtdllProxy::LoadLibraryExW_Ldr(lpLibFullPath, NULL, 0);
         if (snippet)

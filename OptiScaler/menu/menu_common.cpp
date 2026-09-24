@@ -3217,17 +3217,52 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
              "it recognises. Try it only if 3X/4X motion is not smoother.\n"
              "ini: [DLSSG] AdaTemporalFix. Save Settings and restart to apply.");
 
+    const char* qualityNames[] = {
+        "Current working engine", "Legacy framework baseline", "Legacy Balanced boundaries",
+        "Legacy Aggressive boundaries", "Adaptive Quality 1.1.5"
+    };
+    int qualityMode = std::clamp(config->FGDLSSGAdaQualityMode.value_or_default(), 0, 4);
+    if (ImGui::Combo("FG kernel quality##ada", &qualityMode, qualityNames, 5))
+        config->FGDLSSGAdaQualityMode = qualityMode;
+    showHelp("Experimental, exact DLSS-G 310.9.1 only. Quality profiles replace the current timing-fix\n"
+             "backend for this session; they do not stack with it. Adaptive coordinates boundary,\n"
+             "warp and inpaint changes and does not stack with the legacy profiles.\n"
+             "Current working engine remains the default. Save Settings and restart to apply.\n"
+             "ini: [DLSSG] AdaMfgQualityMode.");
+
+    bool warpBlend = config->FGDLSSGAdaWarpBlend.value_or_default();
+    ImGui::BeginDisabled(qualityMode == 0 || qualityMode == 4);
+    if (ImGui::Checkbox("Legacy Warp Blend##ada", &warpBlend))
+        config->FGDLSSGAdaWarpBlend = warpBlend;
+    ImGui::EndDisabled();
+    showHelp("A separate legacy colour-warp experiment. Ignored with the current engine or Adaptive\n"
+             "Quality. Earlier RDR2 tests raised an NRSTAB interaction concern, so leave it off\n"
+             "unless testing that path alone. Save Settings and restart to apply.\n"
+             "ini: [DLSSG] AdaMfgWarpBlend.");
+
     // The result, directly under the control (which method applied, or the specific reason it did not).
-    if (!status.ModuleFound)
+    if (status.PatchFailed)
+    {
+        ImGui::TextColored(ImVec4(0.95f, 0.30f, 0.25f, 1.0f), "FG unlock refused: %s.",
+                           status.TemporalDetail.empty() ? "patch failure" : status.TemporalDetail.c_str());
+    }
+    else if (!status.ModuleFound)
     {
         ImGui::TextDisabled("Not applied yet: DLSSG has not loaded.");
     }
     else if (status.KernelsRewritten > 0)
     {
-        const bool ptx = status.TemporalAttempted == MfgUnlock::TemporalMethod::Ptx;
-        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Applied: %s, %u %s",
-                           ptx ? "rewrite blend weight" : "reuse Blackwell kernel", status.KernelsRewritten,
-                           ptx ? "descriptor(s)" : "kernel group(s)");
+        if (status.QualityMode != 0)
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Applied: %s (%u kernels, warp %s)",
+                               qualityNames[std::clamp(status.QualityMode, 0, 4)], status.KernelsRewritten,
+                               status.QualityWarp ? "on" : "off");
+        else
+        {
+            const bool ptx = status.TemporalAttempted == MfgUnlock::TemporalMethod::Ptx;
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Applied: %s, %u %s",
+                               ptx ? "rewrite blend weight" : "reuse Blackwell kernel", status.KernelsRewritten,
+                               ptx ? "descriptor(s)" : "kernel group(s)");
+        }
     }
     else
     {
@@ -3235,7 +3270,9 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
                            status.TemporalDetail.empty() ? "no reason recorded" : status.TemporalDetail.c_str());
     }
 
-    if (status.ModuleFound && status.TemporalAttempted != resolved)
+    if (status.ModuleFound && (status.QualityMode != qualityMode ||
+                               (status.QualityMode > 0 && status.QualityMode < 4 && status.QualityWarp != warpBlend) ||
+                               (status.QualityMode == 0 && status.TemporalAttempted != resolved)))
         ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Save Settings and restart to apply.");
 
     ImGui::Spacing();

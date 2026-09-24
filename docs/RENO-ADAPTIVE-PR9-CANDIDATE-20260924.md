@@ -154,3 +154,57 @@ rollback/protection/cache suite, provider/ceiling/PTX/method/flip smoke checks,
 and a read-only mapped-provider smoke (`1/1` gate family, 31 retarget groups).
 The disk provider hash remained unchanged. These are the baseline assertions
 that later quality and PR #9 edits must preserve, not proof of their success.
+
+## Implementation checkpoint — quality branch, 24 September
+
+The isolated candidate now has restart-scoped modes 1–3 and Adaptive mode 4.
+Mode 0 is unchanged. Adaptive forces its validated warp stage and cannot be
+stacked with the legacy warp toggle. Quality planning verifies the exact
+provider, all three roles and original payload hashes; one shared transaction
+owns gates, cubins and descriptor redirects. A failed plan writes nothing; a
+clean transaction failure rolls back, and incomplete rollback retains the
+provider/allocation and refuses the unlock. The old independent quality writer
+was not copied. Generated provider-derived headers are ignored by Git; their
+hashes and upstream license are in `mfgquality/UPSTREAM.md`.
+
+Release x64 RTX40 compiled. The installable DLL is rebuilt from the committed
+candidate and its final SHA-256 belongs in the package manifest.
+The existing 22 MFG patch cases, transaction safety checks, 7 exact-provider
+mode/warp mappings, and new quality failure cases (late clean rollback, unsafe
+rollback retention, changed-source fingerprint) passed. The entire NR
+prerelease suite passed. On the actual RTX 4090 the CUDA driver loaded all
+baseline and seven variant cubins, and selected both legacy and Adaptive warp
+PTX from the production adapter. No CUDA kernel or game FG was executed;
+visual quality, frame pacing and crash-free gameplay are **unverified**.
+
+PR #9's second-provider handover is now implemented without releasing the
+first patched DLL: at most eight distinct providers may be retained, duplicate
+admission is inert, and capacity exhaustion or a failed second-provider
+retention/identity/patch refuses higher FG. A failed clean patch releases only
+the new reference; incomplete rollback keeps every affected provider and
+redirect allocation. The failure test first reproduced the missing handover,
+then passed after the change. Synthetic second-provider success, unsupported,
+late clean failure, unsafe rollback, failed reference retention and capacity
+tests now pass. The loader no longer uses `Pending()` to exclude OTA providers
+after the base DLL succeeds. This is production-source CPU evidence, not a
+live OTA runtime test.
+
+PR #9's proposed finished-picture suppression is not copied by unlock setting
+or cached count: this branch already uses a separate pre-FG Streamline picture
+handoff, and its existing owner-specific tests pass. PR #7 is an upstream
+merge whose external-FG cancellation has different call-site ownership; it is
+not a general-purpose cancellation to inject into XeFG/PureDark paths.
+
+The magnitude-only research cubin (SHA-256
+`75054B41D03DFA489E09DC62F760C01FE8BCE210497C18489363128802444762`)
+now also passed CUDA **load and function selection** on the RTX 4090. It is
+still an offline-only experiment: its 32-grid-unit threshold is uncalibrated
+to display pixels, and no gameplay use is authorized by that probe. It is not
+misrepresented as a completed fifth quality mode.
+
+The existing `[DLSSG] AdaMfgQualityMode` and `AdaMfgWarpBlend` INI key names
+are preserved from the earlier working-main Reno experiment. An old `auto`
+value remains the mode-0 default; no existing Miles INI is changed merely by
+building this candidate. On a second-provider failure the overlay now gives
+the refusal precedence over the first provider's previously successful kernel
+count, so it cannot show a green applied claim while higher FG is disabled.

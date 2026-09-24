@@ -17,7 +17,7 @@ cl /nologo /std:c++20 /EHsc /W4 /DUNICODE /D_UNICODE /DOPTISCALER_RTX40_MFG /I "
 Set-Content -LiteralPath "$out/build.cmd" -Value $build
 & "$out/build.cmd"
 if ($LASTEXITCODE) { throw 'MFG regression build failed' }
-foreach ($case in @('disabled', 'blackwell', 'ampere', 'other-vendor', 'restart', 'plan-invalid-pointer', 'missing-gate', 'duplicate-gate', 'mixed-families', 'unknown', 'bad-image', 'bad-section', 'no-kernel', 'malformed', 'legacy', '3109', 'sr-only', 'mixed-exports', 'neither-export', 'retain-failure', 'protect-fail-late', 'rollback-incomplete')) {
+foreach ($case in @('disabled', 'blackwell', 'ampere', 'other-vendor', 'restart', 'plan-invalid-pointer', 'missing-gate', 'duplicate-gate', 'mixed-families', 'unknown', 'bad-image', 'bad-section', 'no-kernel', 'malformed', 'legacy', '3109', 'sr-only', 'mixed-exports', 'neither-export', 'retain-failure', 'protect-fail-late', 'rollback-incomplete', 'second-provider', 'second-provider-unsupported', 'second-provider-fail-clean', 'second-provider-fail-unsafe', 'second-provider-retain-failure', 'second-provider-capacity')) {
     & "$out/mfg-patch.exe" $case
     if ($LASTEXITCODE) { throw "MFG regression failed: $case" }
 }
@@ -47,9 +47,18 @@ cl /nologo /std:c++20 /EHsc /W4 "$repo/tests/$smoke.cpp" /Fe:"$out/$smoke.exe" /
     if ($LASTEXITCODE) { throw "$smoke build failed" }
     & "$out/$smoke.exe"
     if ($LASTEXITCODE) { throw "$smoke failed" }
-}if ($Runtime) {
+}
+if ($Runtime) {
     $before = (Get-FileHash -LiteralPath $Runtime -Algorithm SHA256).Hash
     & "$out/mfg-patch.exe" runtime $Runtime
     if ($LASTEXITCODE) { throw 'Installed runtime patch smoke failed' }
+    foreach ($qualityCase in @('runtime-quality-1', 'runtime-quality-2', 'runtime-quality-3',
+                               'runtime-quality-4', 'runtime-quality-1-warp',
+                               'runtime-quality-2-warp', 'runtime-quality-3-warp',
+                               'runtime-quality-4-fail-clean', 'runtime-quality-4-fail-unsafe',
+                               'runtime-quality-4-bad-fingerprint')) {
+        & "$out/mfg-patch.exe" $qualityCase $Runtime
+        if ($LASTEXITCODE) { throw "Quality profile failed: $qualityCase" }
+    }
     if ((Get-FileHash -LiteralPath $Runtime -Algorithm SHA256).Hash -ne $before) { throw 'Runtime file changed' }
 }

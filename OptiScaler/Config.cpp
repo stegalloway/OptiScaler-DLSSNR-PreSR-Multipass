@@ -241,6 +241,12 @@ bool Config::Reload(std::filesystem::path iniPath)
             }
 
             FGDLSSGAdaFlipMeteringPatch.set_from_config(readBool("DLSSG", "AdaFlipMeteringPatch"));
+            // Keep the original working-main key names so an existing test
+            // configuration is not silently reset by this newer base.
+            FGDLSSGAdaQualityMode.set_from_config(readInt("DLSSG", "AdaMfgQualityMode"));
+            if (FGDLSSGAdaQualityMode.value_or_default() < 0 || FGDLSSGAdaQualityMode.value_or_default() > 4)
+                FGDLSSGAdaQualityMode.reset();
+            FGDLSSGAdaWarpBlend.set_from_config(readBool("DLSSG", "AdaMfgWarpBlend"));
 #endif
             FGDLSSGInterpolationCount.set_from_config(readInt("DLSSG", "InterpolationCount"));
             if (FGDLSSGInterpolationCount.has_value() &&
@@ -1124,10 +1130,14 @@ bool Config::SaveIni(std::filesystem::path destination)
         ini.SetValue("DLSSG", "AdaTemporalFix", Instance()->FGDLSSGAdaTemporalFix.value_for_config_or("auto").c_str());
         ini.SetValue("DLSSG", "AdaFlipMeteringPatch",
                      GetBoolValue(Instance()->FGDLSSGAdaFlipMeteringPatch.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "AdaMfgQualityMode", GetIntValue(Instance()->FGDLSSGAdaQualityMode.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "AdaMfgWarpBlend", GetBoolValue(Instance()->FGDLSSGAdaWarpBlend.value_for_config()).c_str());
 #else
         ini.Delete("DLSSG", "AdaMfgUnlock");
         ini.Delete("DLSSG", "AdaTemporalFix");
         ini.Delete("DLSSG", "AdaFlipMeteringPatch");
+        ini.Delete("DLSSG", "AdaMfgQualityMode");
+        ini.Delete("DLSSG", "AdaMfgWarpBlend");
 #endif
         ini.SetValue("DLSSG", "InterpolationCount",
                      GetIntValue(Instance()->FGDLSSGInterpolationCount.value_for_config()).c_str());

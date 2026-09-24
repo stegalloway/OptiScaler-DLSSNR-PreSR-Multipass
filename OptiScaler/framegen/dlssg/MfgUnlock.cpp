@@ -14,7 +14,9 @@
 #include "MfgUnlockPlugin.h"
 #include "MfgUnlockPtx.h"
 #include "MfgUnlockTransaction.h"
+#include "MfgQuality.h"
 
+#include <array>
 #include <mutex>
 #include <tlhelp32.h>
 
@@ -48,10 +50,41 @@ constexpr std::string_view kValidatePattern309 = "3D B0 01 00 00 0F 93 C0";
 
 MfgUnlock::Status g_status {};
 std::recursive_mutex g_mutex;
-// One provider is admitted per process. Keep a real loader reference after
-// entering the mutation path, including when an older non-transactional helper
-// reports failure after a possible partial write.
+// Every patched provider keeps a real loader reference for process lifetime.
+// In particular, an OTA handover must not release the base DLL while its
+// modified code may still execute on another thread.
 HMODULE g_retainedProvider = nullptr;
+constexpr size_t kMaxPatchedProviders = 8;
+std::array<HMODULE, kMaxPatchedProviders - 1> g_priorPatchedProviders {};
+size_t g_priorPatchedProviderCount = 0;
+// A successful quality descriptor redirect must remain live with the retained
+// provider. After incomplete rollback it also cannot be freed safely.
+void* g_qualityAllocation = nullptr;
+std::array<void*, kMaxPatchedProviders - 1> g_priorQualityAllocations {};
+size_t g_priorQualityAllocationCount = 0;
+
+bool IsPatchedProvider(HMODULE module)
+{
+    return module == g_retainedProvider ||
+           std::find(g_priorPatchedProviders.begin(),
+                     g_priorPatchedProviders.begin() + g_priorPatchedProviderCount, module) !=
+               g_priorPatchedProviders.begin() + g_priorPatchedProviderCount;
+}
+
+void RetainPatchedProvider(HMODULE acquired)
+{
+    if (g_retainedProvider)
+        g_priorPatchedProviders[g_priorPatchedProviderCount++] = g_retainedProvider;
+    g_retainedProvider = acquired;
+}
+
+void RetainQualityAllocation(void* allocation)
+{
+    if (!allocation) return;
+    if (g_qualityAllocation)
+        g_priorQualityAllocations[g_priorQualityAllocationCount++] = g_qualityAllocation;
+    g_qualityAllocation = allocation;
+}
 
 // A filename or NGX version string alone can also identify a DirectSR module.
 // Require the DLSS-G-specific export and refuse mixed-export images before any
@@ -770,6 +803,34 @@ bool GuardedBuildRetargetPlan(HMODULE module, std::vector<MfgUnlock::Transaction
     }
 }
 
+bool BuildQualityPlan(HMODULE module, MfgQuality::Options quality,
+                      std::vector<MfgUnlock::Transaction::Patch>& plan, MfgQuality::Result& prepared)
+{
+    if (!BuildGatePlan(module, plan) || !MfgQuality::Prepare(module, quality, {}, prepared) ||
+        prepared.writes.size() < 3)
+        return false;
+
+    for (const auto& write : prepared.writes)
+        if (!MfgUnlock::Transaction::AddPatch(plan, write.address, write.replacement.data(),
+                                               write.replacement.size()))
+            return false;
+    return true;
+}
+
+bool GuardedBuildQualityPlan(HMODULE module, MfgQuality::Options quality,
+                             std::vector<MfgUnlock::Transaction::Patch>& plan, MfgQuality::Result& prepared)
+{
+    __try
+    {
+        return BuildQualityPlan(module, quality, plan, prepared);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        prepared.detail = "provider access fault during quality planning; no writes";
+        return false;
+    }
+}
+
 } // namespace
 
 void MfgUnlock::TryApply(HMODULE requestedModule)
@@ -779,16 +840,38 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
 
     std::lock_guard lock(g_mutex);
 
-    // Latches once nvngx_dlssg.dll is present; before that every call rescans for it.
+    // A direct provider call is allowed to introduce a second, distinct OTA
+    // image after success. Null-module periodic calls never re-patch the base.
     static bool snippetDone = false;
+    if (g_status.PatchFailed)
+        return;
+    if (requestedModule && IsPatchedProvider(requestedModule))
+        return;
+    const bool secondProvider = snippetDone && g_retainedProvider && requestedModule;
+    if (snippetDone && !secondProvider)
+        return;
+    if (secondProvider && g_priorPatchedProviderCount + 1 >= kMaxPatchedProviders)
+    {
+        g_status.PatchFailed = true;
+        g_status.TemporalDetail = "patched provider capacity exhausted; higher FG refused";
+        LOG_WARN("MFG unlock: {}", g_status.TemporalDetail);
+        return;
+    }
 
-    if (!snippetDone)
+    if (!snippetDone || secondProvider)
     {
         HMODULE acquired = nullptr;
         if (requestedModule)
         {
             if (!RetainModule(requestedModule, acquired))
             {
+                if (secondProvider)
+                {
+                    // The new provider may now be selected by NGX. The old
+                    // successful patch cannot justify a claim about it.
+                    g_status.PatchFailed = true;
+                    g_status.TemporalDetail = "second provider could not be retained; higher FG refused";
+                }
                 LOG_WARN("MFG unlock: could not retain provider; left unchanged");
                 return;
             }
@@ -802,6 +885,11 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
             if (!ValidProviderImage(module))
             {
                 FreeLibrary(acquired);
+                if (secondProvider)
+                {
+                    g_status.PatchFailed = true;
+                    g_status.TemporalDetail = "second provider identity invalid; higher FG refused";
+                }
                 LOG_WARN("MFG unlock: provider identity or image layout invalid; left unchanged");
                 return;
             }
@@ -813,12 +901,16 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
             if (!knownGates)
             {
                 FreeLibrary(acquired);
+                if (secondProvider)
+                {
+                    g_status.PatchFailed = true;
+                    g_status.TemporalDetail = "second provider gates unsupported; higher FG refused";
+                }
                 LOG_WARN("MFG unlock: unsupported or ambiguous DLSSG {} signatures; left unchanged",
                          ModuleVersion(module));
                 return;
             }
 
-            g_retainedProvider = acquired;
             snippetDone = true;
             g_status.ModuleFound = true;
             g_status.SnippetVersion = ModuleVersion(module);
@@ -832,13 +924,26 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
             // descriptor table cannot be reported as a working unlock.
             const auto method = ConfiguredTemporalMethod();
             g_status.TemporalAttempted = method;
+            const MfgQuality::Options quality {
+                Config::Instance()->FGDLSSGAdaQualityMode.value_or_default(),
+                Config::Instance()->FGDLSSGAdaWarpBlend.value_or_default()
+            };
+            g_status.QualityMode = quality.mode;
 
             std::vector<MfgUnlock::Transaction::Patch> plan;
             unsigned int kernelCount = 0;
             Ptx::Plan ptxPlan;
             Ptx::Result ptxResult;
+            MfgQuality::Result qualityResult;
             bool planned = false;
-            if (method == TemporalMethod::Retarget)
+            if (quality.mode != 0)
+            {
+                // One exclusive backend per process: no broad Retarget or PTX
+                // descriptor writes are combined with the quality profile.
+                planned = GuardedBuildQualityPlan(module, quality, plan, qualityResult);
+                if (planned) kernelCount = 3;
+            }
+            else if (method == TemporalMethod::Retarget)
                 planned = GuardedBuildRetargetPlan(module, plan, kernelCount);
             else if (BuildGatePlan(module, plan) && Ptx::Prepare(module, ptxPlan, ptxResult))
             {
@@ -854,11 +959,15 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
             {
                 if (ptxPlan.rebuilt)
                     VirtualFree(ptxPlan.rebuilt, 0, MEM_RELEASE);
-                g_status.TemporalDetail = method == TemporalMethod::Ptx && !ptxResult.detail.empty()
-                                              ? ptxResult.detail
-                                              : "unsupported, malformed or mixed gate/kernel layout; no writes";
-                FreeLibrary(g_retainedProvider);
-                g_retainedProvider = nullptr;
+                MfgQuality::DiscardUncommitted(qualityResult);
+                g_status.TemporalDetail = quality.mode != 0 && !qualityResult.detail.empty()
+                                              ? qualityResult.detail
+                                              : method == TemporalMethod::Ptx && !ptxResult.detail.empty()
+                                                  ? ptxResult.detail
+                                                  : "unsupported, malformed or mixed gate/kernel layout; no writes";
+                g_status.QualityDetail = quality.mode != 0 ? g_status.TemporalDetail : "";
+                if (secondProvider) g_status.PatchFailed = true;
+                FreeLibrary(acquired);
                 LOG_WARN("MFG unlock: {}", g_status.TemporalDetail);
                 return;
             }
@@ -875,21 +984,40 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
                 {
                     if (ptxPlan.rebuilt)
                         VirtualFree(ptxPlan.rebuilt, 0, MEM_RELEASE);
-                    FreeLibrary(g_retainedProvider);
-                    g_retainedProvider = nullptr;
+                    MfgQuality::DiscardUncommitted(qualityResult);
+                    FreeLibrary(acquired);
+                }
+                else
+                {
+                    RetainPatchedProvider(acquired);
+                    RetainQualityAllocation(qualityResult.warpAllocation);
                 }
                 LOG_WARN("MFG unlock: {}", g_status.TemporalDetail);
                 return;
             }
 
+            RetainPatchedProvider(acquired);
             g_status.KernelsRewritten = kernelCount;
             g_status.AdvertiseMatched = true;
             g_status.ValidateMatched = true;
-            g_status.TemporalDetail = method == TemporalMethod::Retarget
-                                          ? "complete Blackwell retarget and gate transaction"
-                                          : "complete PTX descriptor and gate transaction";
+            if (quality.mode != 0)
+            {
+                RetainQualityAllocation(qualityResult.warpAllocation);
+                g_status.QualityWarp = quality.warp || quality.mode == 4;
+                g_status.QualityDetail = std::format("quality profile {} with {}", quality.mode,
+                                                     g_status.QualityWarp ? "warp path" : "native warp");
+            }
+            g_status.TemporalDetail = quality.mode != 0
+                                          ? "complete quality profile and gate transaction"
+                                          : method == TemporalMethod::Retarget
+                                              ? "complete Blackwell retarget and gate transaction"
+                                              : "complete PTX descriptor and gate transaction";
             LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames ({})", kMaxGeneratedFrames,
                      g_status.TemporalDetail);
+            if (quality.mode != 0)
+                LOG_INFO("[MFGQUALITY] mode={} warp={} applied=true kernels={} provider={} detail={}",
+                         quality.mode, g_status.QualityWarp, kernelCount, g_status.SnippetVersion,
+                         g_status.QualityDetail);
 
             // A plugin that was loaded first has been waiting for this.
             PatchPluginCeilings();
