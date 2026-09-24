@@ -252,7 +252,10 @@ int main(int argc, char** argv) try
                        "Capacity-exhausted provider was modified");
             }
         }
-        Expect(g_referencesAcquired == kMaxPatchedProviders && g_referencesReleased == 0,
+        // Identity must be inspected under a real loader reference before a
+        // capacity decision. The refused provider's temporary reference is
+        // released; all patched-provider references remain held.
+        Expect(g_referencesAcquired == kMaxPatchedProviders + 1 && g_referencesReleased == 1,
                "Patched modules lost references or exhausted module was retained");
         for (auto held : g_extraSyntheticModules) VirtualFree(held, 0, MEM_RELEASE);
         VirtualFree(memory, 0, MEM_RELEASE);
@@ -261,7 +264,8 @@ int main(int argc, char** argv) try
     }
     if (mode == "second-provider" || mode == "second-provider-unsupported" ||
         mode == "second-provider-fail-clean" || mode == "second-provider-fail-unsafe" ||
-        mode == "second-provider-retain-failure")
+        mode == "second-provider-retain-failure" || mode == "second-non-provider" ||
+        mode == "second-directsr-only")
     {
         auto* second = static_cast<uint8_t*>(VirtualAlloc(nullptr, 0x5000, MEM_RESERVE | MEM_COMMIT,
                                                          PAGE_READWRITE));
@@ -282,6 +286,11 @@ int main(int argc, char** argv) try
             if (failUnsafe) g_failProtectAt2 = g_failProtectAt + 1;
         }
         if (mode == "second-provider-retain-failure") g_referenceAcquisitionFails = true;
+        if (mode == "second-non-provider" || mode == "second-directsr-only")
+        {
+            g_hasDlssgExport = false;
+            g_hasDirectSrExport = mode == "second-directsr-only";
+        }
         MfgUnlock::TryApply(g_secondarySyntheticModule);
         if (mode == "second-provider")
         {
@@ -302,6 +311,15 @@ int main(int argc, char** argv) try
                    "Unsupported second provider changed bytes");
             Expect(g_referencesReleased == 1 && g_referencesAcquired == 2,
                    "Unsupported provider's new reference must be released");
+        }
+        else if (mode == "second-non-provider" || mode == "second-directsr-only")
+        {
+            Expect(MfgUnlock::UnlockedMax() == 5 && MfgUnlock::EffectiveMax(1) == 5 &&
+                       !MfgUnlock::LastStatus().PatchFailed && g_retainedProvider == module,
+                   "Non-DLSS-G module revoked a verified unlock");
+            Expect(std::memcmp(second, secondBefore.data(), secondBefore.size()) == 0 &&
+                       g_referencesAcquired == 2 && g_referencesReleased == 1,
+                   "Non-DLSS-G module was mutated or retained");
         }
         else if (mode == "second-provider-retain-failure")
         {

@@ -208,3 +208,27 @@ value remains the mode-0 default; no existing Miles INI is changed merely by
 building this candidate. On a second-provider failure the overlay now gives
 the refusal precedence over the first provider's previously successful kernel
 count, so it cannot show a green applied claim while higher FG is disabled.
+
+## First live Miles startup and MFG correction
+
+The first installed `62664594` candidate **did not unlock MFG**. The 15:40
+Miles log shows the game-local DLSS-G 310.9.1 provider successfully patched,
+then a second `nvngx_dlssg.dll` load was treated as an invalid provider and
+revoked the unlock. A diagnostic-only startup identified the second module as
+NVIDIA's DriverStore copy, which has neither the DLSS-G provider export nor
+the DirectSR export. The filename/path filter alone was insufficient to prove
+that this module could provide FG. This is a candidate regression, not a user
+configuration or quality-mode result.
+
+The correction retains the loaded module before inspecting its exports. A
+module with neither export, or DirectSR alone, is ignored and its temporary
+reference released without affecting an earlier successful patch. A genuine
+DLSS-G export, mixed export identity or export-inspection fault still takes
+the conservative second-provider path; failed identity, signature, capacity
+or transaction checks refuse higher FG. The capacity decision now follows
+retained identity inspection, so a non-provider cannot exhaust provider slots.
+Production-backed tests added the no-export and DirectSR-only late-load cases;
+the existing actual-second-provider safety tests remain in force. The fix
+requires a fresh live Miles startup and FG off/on test before this candidate
+can be called working. The diagnostic DLL and failed log were backed up under
+`05_BACKUPS/MILES-RENO-ADAPTIVE-DIAG-20260924-1540`.

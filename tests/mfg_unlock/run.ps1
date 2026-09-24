@@ -17,7 +17,7 @@ cl /nologo /std:c++20 /EHsc /W4 /DUNICODE /D_UNICODE /DOPTISCALER_RTX40_MFG /I "
 Set-Content -LiteralPath "$out/build.cmd" -Value $build
 & "$out/build.cmd"
 if ($LASTEXITCODE) { throw 'MFG regression build failed' }
-foreach ($case in @('disabled', 'blackwell', 'ampere', 'other-vendor', 'restart', 'plan-invalid-pointer', 'missing-gate', 'duplicate-gate', 'mixed-families', 'unknown', 'bad-image', 'bad-section', 'no-kernel', 'malformed', 'legacy', '3109', 'sr-only', 'mixed-exports', 'neither-export', 'retain-failure', 'protect-fail-late', 'rollback-incomplete', 'second-provider', 'second-provider-unsupported', 'second-provider-fail-clean', 'second-provider-fail-unsafe', 'second-provider-retain-failure', 'second-provider-capacity')) {
+foreach ($case in @('disabled', 'blackwell', 'ampere', 'other-vendor', 'restart', 'plan-invalid-pointer', 'missing-gate', 'duplicate-gate', 'mixed-families', 'unknown', 'bad-image', 'bad-section', 'no-kernel', 'malformed', 'legacy', '3109', 'sr-only', 'mixed-exports', 'neither-export', 'retain-failure', 'protect-fail-late', 'rollback-incomplete', 'second-provider', 'second-provider-unsupported', 'second-provider-fail-clean', 'second-provider-fail-unsafe', 'second-provider-retain-failure', 'second-provider-capacity', 'second-non-provider', 'second-directsr-only')) {
     & "$out/mfg-patch.exe" $case
     if ($LASTEXITCODE) { throw "MFG regression failed: $case" }
 }

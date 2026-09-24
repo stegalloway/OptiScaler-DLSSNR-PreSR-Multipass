@@ -803,6 +803,21 @@ bool GuardedBuildRetargetPlan(HMODULE module, std::vector<MfgUnlock::Transaction
     }
 }
 
+// Keep SEH outside TryApply: that function has C++ objects requiring unwinding.
+// Bit 2 distinguishes an inspection fault from a module with neither export.
+unsigned int ProviderExportBits(HMODULE module)
+{
+    __try
+    {
+        return (GetProcAddress(module, "NVSDK_NGX_D3D12_PopulateDeviceParameters_Impl") ? 1u : 0u) |
+               (GetProcAddress(module, "NVSDK_NGX_DirectSR_Create") ? 2u : 0u);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return 4u;
+    }
+}
+
 bool BuildQualityPlan(HMODULE module, MfgQuality::Options quality,
                       std::vector<MfgUnlock::Transaction::Patch>& plan, MfgQuality::Result& prepared)
 {
@@ -850,14 +865,6 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
     const bool secondProvider = snippetDone && g_retainedProvider && requestedModule;
     if (snippetDone && !secondProvider)
         return;
-    if (secondProvider && g_priorPatchedProviderCount + 1 >= kMaxPatchedProviders)
-    {
-        g_status.PatchFailed = true;
-        g_status.TemporalDetail = "patched provider capacity exhausted; higher FG refused";
-        LOG_WARN("MFG unlock: {}", g_status.TemporalDetail);
-        return;
-    }
-
     if (!snippetDone || secondProvider)
     {
         HMODULE acquired = nullptr;
@@ -882,15 +889,42 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
         if (acquired != nullptr)
         {
             HMODULE module = acquired;
+            const auto exports = ProviderExportBits(module);
+            // NVIDIA also loads a DriverStore nvngx_dlssg.dll with no DLSS-G
+            // provider export. Filename alone cannot make it an OTA handover.
+            // A DirectSR-only image is likewise not a DLSS-G provider. Do not
+            // revoke an already verified unlock for either unrelated module.
+            if (exports == 0u || exports == 2u)
+            {
+                wchar_t ignoredPath[MAX_PATH] {};
+                GetModuleFileNameW(module, ignoredPath, MAX_PATH);
+                LOG_INFO("MFG unlock: ignored non-DLSS-G module at {} (exports {:X})",
+                         wstring_to_string(ignoredPath), exports);
+                FreeLibrary(acquired);
+                return;
+            }
+            // Only a module with DLSS-G identity (or an export-inspection
+            // fault) can consume provider capacity or invalidate the handover.
+            if (secondProvider && g_priorPatchedProviderCount + 1 >= kMaxPatchedProviders)
+            {
+                FreeLibrary(acquired);
+                g_status.PatchFailed = true;
+                g_status.TemporalDetail = "patched provider capacity exhausted; higher FG refused";
+                LOG_WARN("MFG unlock: {}", g_status.TemporalDetail);
+                return;
+            }
             if (!ValidProviderImage(module))
             {
+                wchar_t rejectedPath[MAX_PATH] {};
+                GetModuleFileNameW(module, rejectedPath, MAX_PATH);
                 FreeLibrary(acquired);
                 if (secondProvider)
                 {
                     g_status.PatchFailed = true;
                     g_status.TemporalDetail = "second provider identity invalid; higher FG refused";
                 }
-                LOG_WARN("MFG unlock: provider identity or image layout invalid; left unchanged");
+                LOG_WARN("MFG unlock: provider identity or image layout invalid at {} (handle {:X}, exports {:X}); "
+                         "left unchanged", wstring_to_string(rejectedPath), reinterpret_cast<uintptr_t>(module), exports);
                 return;
             }
 
@@ -900,6 +934,7 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
                 (UniqueAddress(module, kAdvertisePattern) && UniqueAddress(module, kValidatePattern));
             if (!knownGates)
             {
+                const auto version = ModuleVersion(module);
                 FreeLibrary(acquired);
                 if (secondProvider)
                 {
@@ -907,7 +942,7 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
                     g_status.TemporalDetail = "second provider gates unsupported; higher FG refused";
                 }
                 LOG_WARN("MFG unlock: unsupported or ambiguous DLSSG {} signatures; left unchanged",
-                         ModuleVersion(module));
+                         version);
                 return;
             }
 
