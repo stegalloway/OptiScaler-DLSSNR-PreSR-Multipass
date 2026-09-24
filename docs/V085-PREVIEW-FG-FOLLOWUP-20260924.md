@@ -257,3 +257,38 @@ working GPU/presentation trace or a diagnostic-only measurement of Reflex
 sleep and submission waits; the latter alone still cannot measure native
 DLSS-G's GPU execution time. Do not label the ~3 ms as a measured FG kernel
 cost.
+
+### Unlock-overhead isolation preflight, 24 September
+
+The next paired test keeps the known-good `dxgi.dll`, DLSS mode, NR working
+scale, NRSTAB, model strength, scene, camera route, and display settings
+unchanged. It compares native 2x with `[DLSSG] AdaMfgUnlock=false` against
+unlocked 2x with `AdaMfgUnlock=true`; both use
+`OverrideInterpolationCount=1` and require a full game restart. The existing
+unlocked 2x/4x/2x run already measures the incremental higher-multiplier
+effect. Only after the 2x pair is understood should a 4x Ptx-versus-Retarget
+comparison be considered. Do not reduce NR resolution or detail.
+
+Important comparability gate: the unlock currently also allows downloaded
+Streamline plugins at `slInit`. The prior unlocked session loaded the OTA
+`sl.dlss_g` 2.14.0 plugin. Compare loaded plugin and DLSS-G provider identity
+in both 2x logs before attributing a difference to the provider patch. If the
+plugin changes in native 2x, the naive A/B has two variables and needs a
+diagnostic-only build that keeps plugin selection fixed while withholding the
+unlock patch. `slDLSSGGetState` presentation counts must not be queried extra
+times; each value covers the interval since the preceding call. Application
+Present counts divided by requested multiplier remain estimates, not proof
+that all generated frames reached the display.
+
+Stop the comparison and restore the saved configuration if the native or
+unlocked control crashes, loses FG, or develops smearing. The pretest INI
+(`4E6A660551CD74F04DCC782E245D8BF990A256C951493DE60AFAFDAFE2F75AAF`)
+and installed DLL
+(`DA7B59B4BFFF42F14B6F15CE0A5D88E94F03452A66860951A04C7491236E988B`)
+were verified and the INI/log copied into
+`05_BACKUPS/MILES-RTX4090-FG-COST-20260924` before any changes. The local
+PresentMon executable still exited 1 even with a unique session name.
+FrameView SDK service access was probed without game or settings changes but
+returned `FV_SDK_SESSION_IN_PROGRESS` (20) at session start, so there is no
+new external display/GPU timing source yet. No inference about FG GPU time
+may be drawn from those failed preflights.
