@@ -344,3 +344,10 @@ with their matching INIs. The original unlocked 2x/4x/FG-off final log and
 the first local-plugin native snapshot are retained in the same folder to
 show why plugin matching was required. Restore the backed-up known-good DLL
 and original INI after diagnostic testing is complete.
+
+After saving the final logs, Miles was confirmed closed and the protected
+known-good `dxgi.dll` and original INI were restored to the game. Their
+post-restore SHA-256 values match the pretest values above exactly:
+`DA7B59B4BFFF42F14B6F15CE0A5D88E94F03452A66860951A04C7491236E988B`
+and `4E6A660551CD74F04DCC782E245D8BF990A256C951493DE60AFAFDAFE2F75AAF`.
+The diagnostic DLL is no longer installed.
