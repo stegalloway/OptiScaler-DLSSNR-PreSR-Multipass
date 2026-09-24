@@ -1,6 +1,7 @@
 #include "pch.h"
 #include <dlssnr/DlssNr_MenuOverlay.h>
 #include "menu_common.h"
+#include "MenuFramePolicy.h"
 #if defined(OPTISCALER_RTX40_MFG)
 #include <framegen/dlssg/MfgUnlock.h>
 #endif
@@ -1667,7 +1668,11 @@ void MenuCommon::BeginMenuFrameIfNeeded(RenderMenuContext& ctx)
     // New frame check
     if ((!config->DisableSplash.value_or_default() && now > splashStart && now < splashLimit) ||
         config->ShowFps.value_or_default() || _isVisible || ImGui::notifications.size() > 0 ||
-        (config->DlssNrCompare.value_or_default() != 0 && config->DlssNrCompareTags.value_or_default()))
+        (config->DlssNrCompare.value_or_default() != 0 && config->DlssNrCompareTags.value_or_default()) ||
+        MenuFramePolicy::SpatialOutlinesNeedFrame(config->DlssNrEnabled.value_or_default(),
+                                                 config->DlssNrSpatialCompression.value_or_default(),
+                                                 config->DlssNrSpatialShowCenter.value_or_default(),
+                                                 config->DlssNrSpatialShowWork.value_or_default()))
     {
         if (!_isUWP)
         {
@@ -1846,7 +1851,8 @@ void MenuCommon::UpdateFrameTimeAverages(RenderMenuContext& ctx)
 //
 void MenuCommon::RenderPerformanceOverlay(RenderMenuContext& ctx)
 {
-    DlssNr::RenderNrCompareTags();
+    if (ctx.newFrame)
+        DlssNr::RenderNrCompareTags();
 
 
     auto& state = ctx.state;

@@ -18,6 +18,7 @@ try {
         & $exe @arguments
         if ($LASTEXITCODE) { throw "$name failed" }
     }
+    RunSmoke 'menu_frame_policy_smoke' @()
     $shader = "$repo/OptiScaler/shaders/dlssnr/precompile/dlssnr.hlsl"
     RunSmoke 'nr_skin_shader_smoke' @('d3d11.lib', 'd3dcompiler.lib') @($shader) @('/IOptiScaler/include')
     RunSmoke 'nr_replace_detail_smoke' @('d3d11.lib', 'd3dcompiler.lib') @($shader)
