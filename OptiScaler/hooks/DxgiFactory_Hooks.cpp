@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "DxgiFactory_Hooks.h"
+#include "DxgiCompositionPolicy.h"
 #include "DxgiSwapchainSizing.h"
 
 #include "D3D11_Hooks.h"
@@ -1308,9 +1309,11 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForComposition(IDXGIFactory2* realFacto
     // Always call the trampoline, including pass-through/error cases. Calling the detoured virtual
     // method here re-enters this hook. Keep the composition descriptor intact: notably, a desktop
     // VSync override must not turn its FLIP_SEQUENTIAL swap effect into FLIP_DISCARD.
+    const bool akaneComposition = pDesc != nullptr &&
+                                  IsAkaneHelperComposition(Util::ExePath().filename().c_str(), pDesc);
     const bool passThrough = State::Instance().vulkanCreatingSC || _skipFGSwapChainCreation ||
                              pDevice == nullptr || pDesc == nullptr || ppSwapChain == nullptr ||
-                             pDesc->Width < 100 || pDesc->Height < 100;
+                             pDesc->Width < 100 || pDesc->Height < 100 || akaneComposition;
     if (pDesc != nullptr && (pDesc->Width < 100 || pDesc->Height < 100))
         LOG_WARN("Composition overlay/helper call! Width: {}, Height: {}", pDesc->Width, pDesc->Height);
 
@@ -1320,6 +1323,8 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForComposition(IDXGIFactory2* realFacto
         ScopedSkipParentWrapping skipParentWrapping {};
         result = o_CreateSwapChainForComposition(realFactory, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
     }
+    if (akaneComposition && SUCCEEDED(result) && ppSwapChain != nullptr && *ppSwapChain != nullptr)
+        LOG_INFO("Akane compatibility: DirectComposition passthrough {}x{}", pDesc->Width, pDesc->Height);
     if (passThrough || FAILED(result) || *ppSwapChain == nullptr)
         return result;
 
