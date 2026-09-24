@@ -231,6 +231,14 @@ ceiling as sufficient explanations. They do not split native DLSS-G GPU work
 from its internal queue/reflex pacing, or prove every requested frame reached
 the display. The native provider was patched for MFG at launch, so both
 phases used that installed provider; no evidence here isolates PTX policy cost.
+Source audit found no OptiScaler per-generated-frame loop in the multiplier
+override: it forwards the accepted count to Streamline. The only count-based
+OptiScaler Reflex mode override is gated on fakenvapi being the *main* NVAPI;
+this session loaded the system NVIDIA `nvapi64.dll`, so that path is not the
+leading explanation. NVIDIA's DLSS-G guide shows higher execution cost at 4x
+than 2x on its supported RTX 50-series benchmarks, but provides no official
+4x cost for RTX 4090. This supports additional FG work as plausible here,
+not as a measured diagnosis of this unofficial unlocked path.
 
 Saved final logs: `05_BACKUPS/MILES-PREVIEW-FG-FOLLOWUP-20260924/OptiScaler-fa17156d-fg-2x4x2x-20260924-final.log`
 (SHA-256 `312036B51EBF1FCB2618A9C200E9B5F5D99A7AE626E7FF708D8A22DBC6D16341`)
