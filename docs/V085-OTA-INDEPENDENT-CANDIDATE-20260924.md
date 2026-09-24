@@ -69,3 +69,21 @@ selected 2.14.0 with MFG off. The separate OptiScaler-owned StreamlineProxy
 still clears both OTA flags in its own preferences; this is a source-level
 boundary, not a claim of cross-game live validation. Rebuild and rerun
 safety checks before the next Miles startup gate.
+
+## Corrected startup gate — passed, visual result pending
+
+Corrected production commit `2c213e50` built as RTX40-MFG Release/x64 DLL
+SHA-256 `FD38F004FBBB29FBA57458AC1C69C73E688352EA08E722E25C1321341147B770`.
+The full `tests/run_nr_prerelease.ps1` suite passed again. The first failed
+DLL, original working DLL, and INI remain separately backed up and hashed in
+the candidate manifest at `04_BUILDS/CANDIDATES/V085-OTA-INDEPENDENT-20260924`.
+With Miles closed, the corrected DLL was installed; the game INI remained
+SHA-256 `F218D87114C14809391EA2EF058F8A156EC88733E8167B1A8A589CCE1B491D6F`.
+
+The live log reports build `2c213e50`, the independent loading message,
+downloaded `sl.dlss_g` 2.14.0 selected over local 2.9.0, native maximum of
+one generated frame, NRSTAB PATH READY and then ACTIVE. Streamline reported
+FG active with `numFramesToGenerate=1` and a later off/on transition. No MFG
+unlock patch was logged. This establishes plugin selection and native FG
+startup, **not** a visual-quality pass or a measured FPS benefit. Preserve
+the final log and obtain the user's visual verdict before promotion.
