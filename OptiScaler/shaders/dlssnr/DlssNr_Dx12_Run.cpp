@@ -418,33 +418,6 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         motionIn = nr.spatialMotion;
     }
 
-    // The game's scale turns its vectors into pixels of the size they are measured in: the render size
-    // for low-resolution vectors, the output size otherwise. The model reprojects an image of the
-    // working size, so convert against that reference -- the DLSS-enlargement path always did. Using
-    // the frame's (output) width here instead halved every vector in a game rendering at half its
-    // output with low-resolution vectors (Onimusha: scale 1920 for a 3840-wide frame gave the model
-    // 1344 where the motion was 2688), at every Model resolution including 100%.
-    const bool renderMotionScale = cfg.DlssNrRenderMotionScale.value_or_default();
-    const unsigned int mvRefW = renderMotionScale && frame.MotionVectorsLowResolution && frame.RenderSubrectWidth
-                                    ? frame.RenderSubrectWidth : width;
-    const unsigned int mvRefH = renderMotionScale && frame.MotionVectorsLowResolution && frame.RenderSubrectHeight
-                                    ? frame.RenderSubrectHeight : height;
-    const float mvToWorkX = mvRefW != 0 ? (float) workWidth / (float) mvRefW : 1.0f;
-    const float mvToWorkY = mvRefH != 0 ? (float) workHeight / (float) mvRefH : 1.0f;
-    {
-        static unsigned int loggedRefW = 0, loggedWorkW = 0;
-        if (loggedRefW != mvRefW || loggedWorkW != workWidth)
-        {
-            loggedRefW = mvRefW;
-            loggedWorkW = workWidth;
-            LOG_INFO("DLSS-NR model motion scale {:.1f} x {:.1f}: game scale {} x {} measured against {}x{} ({}), "
-                     "model {}x{}",
-                     frame.MvScaleX * mvToWorkX, frame.MvScaleY * mvToWorkY, frame.MvScaleX, frame.MvScaleY, mvRefW,
-                     mvRefH, mvRefW != width ? "render size, low-resolution vectors" : "frame size", workWidth,
-                     workHeight);
-        }
-    }
-
     // Below native (and not packed by spatial compression, which brings its own guides), the model
     // was handed a colour at the working size and depth and motion at the frame's size, with only
     // the vector magnitudes rescaled. Nothing says the model resamples a guide that is larger than
@@ -452,8 +425,7 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     // frames after the camera stopped, while the same model at 100% of a frame the game had already
     // shrunk was steady. So give it guides at its own size -- the same point resample the DLSS
     // enlargement path already builds for its private upscaler -- and describe them as a full,
-    // zero-origin region. The vectors keep the game's units; the working-size scale below still
-    // applies.
+    // zero-origin region. The vectors keep the game's units; the scale below converts them.
     bool matchedGuides = false;
     if (reduced && !spatial && workWidth < width && cfg.DlssNrMatchGuides.value_or_default())
     {
@@ -500,6 +472,48 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
                 LOG_WARN("DLSS-NR guides could not be matched to the working size; the model keeps the frame's "
                          "{}x{} guides for its {}x{} colour",
                          guides.depth.width, guides.depth.height, workWidth, workHeight);
+        }
+    }
+
+    // The game's scale turns its vectors into pixels of the size they are measured in: the render
+    // size for low-resolution vectors, the output size otherwise. The model reads the scale it is
+    // given in pixels of the motion texture it is handed, so the conversion is "texture the model
+    // reads / size the vectors are measured in" -- the DLSS-enlargement path's formula, whose
+    // texture is always its own resample. Here the texture is the matched working-size resample
+    // when there is one and the game's own region otherwise. Measuring against the working size
+    // in both cases (v0.8.92) was right only with matched guides: at 100% the model kept the
+    // game's render-size vectors and got a scale for a frame-size texture -- twice too large in
+    // a game upscaling 2x with low-resolution vectors (Onimusha: 3840 where 1920 was right), and
+    // 100% flickered where it had been steady. Before v0.8.92 the reference was the frame size,
+    // which halved every vector below 100% in the same game; RenderMotionScale=false keeps that
+    // for an A/B.
+    const bool renderMotionScale = cfg.DlssNrRenderMotionScale.value_or_default();
+    const unsigned int mvGuideW = !renderMotionScale ? workWidth : matchedGuides ? workWidth : guides.motion.width;
+    const unsigned int mvGuideH = !renderMotionScale ? workHeight : matchedGuides ? workHeight : guides.motion.height;
+    const unsigned int mvRefW = !renderMotionScale                 ? width
+                                : frame.MotionVectorsLowResolution ? frame.RenderSubrectWidth
+                                                                   : frame.OutputWidth;
+    const unsigned int mvRefH = !renderMotionScale                 ? height
+                                : frame.MotionVectorsLowResolution ? frame.RenderSubrectHeight
+                                                                   : frame.OutputHeight;
+    const float mvToWorkX = mvRefW != 0 ? (float) mvGuideW / (float) mvRefW : 1.0f;
+    const float mvToWorkY = mvRefH != 0 ? (float) mvGuideH / (float) mvRefH : 1.0f;
+    {
+        static unsigned int loggedRefW = 0, loggedGuideW = 0, loggedWorkW = 0;
+        if (loggedRefW != mvRefW || loggedGuideW != mvGuideW || loggedWorkW != workWidth)
+        {
+            loggedRefW = mvRefW;
+            loggedGuideW = mvGuideW;
+            loggedWorkW = workWidth;
+            LOG_INFO("DLSS-NR model motion scale {:.1f} x {:.1f}: game scale {} x {} measured against {}x{} ({}), "
+                     "motion texture {}x{} ({}), model {}x{}",
+                     frame.MvScaleX * mvToWorkX, frame.MvScaleY * mvToWorkY, frame.MvScaleX, frame.MvScaleY, mvRefW,
+                     mvRefH,
+                     !renderMotionScale                 ? "frame size, RenderMotionScale=false"
+                     : frame.MotionVectorsLowResolution ? "render size, low-resolution vectors"
+                                                        : "output size",
+                     mvGuideW, mvGuideH, matchedGuides ? "matched to the working size" : "the game's region", workWidth,
+                     workHeight);
         }
     }
 
