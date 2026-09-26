@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "wrapped_swapchain.h"
 #include <dlssnr/DlssNr.h>
+#include <dlssnr/DlssNr_FinishedPicturePolicy.h>
 #include <hooks/DxgiSwapchainSizing.h>
 
 #include <Util.h>
@@ -587,7 +588,12 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                                      State::Instance().activeFgOutput == FGOutput::XeFG &&
                                      State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
                                      fg->Hwnd() == hWnd;
-        if (cq && !xeFgGamePicture && (fg == nullptr || !fg->IsActive() || fg->IsPaused()))
+        const auto& fgState = State::Instance();
+        const bool freshDlssgOwnership = DlssNr::FinishedPicturePolicy::FreshDlssgOwnership(
+            fgState.dlssgDetectedInterpolationCount, fgState.dlssgLastActiveEvaluationFrame, fgState.frameCount);
+        if (DlssNr::FinishedPicturePolicy::AllowWrappedPicture(
+                cq != nullptr, xeFgGamePicture, fg != nullptr,
+                fg != nullptr && fg->IsActive(), fg != nullptr && fg->IsPaused(), freshDlssgOwnership))
             DlssNr::ApplyToFinishedPicture(pSwapChain, cq);
         else if (isD3D11 && State::Instance().swapchainInteropApi == SwapchainInteropApi::None)
             DlssNr::ApplyToFinishedPictureDx11(pSwapChain);

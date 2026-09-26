@@ -1,5 +1,6 @@
 #include "pch.h"
 #include <dlssnr/DlssNr_StreamlinePicture.h>
+#include <dlssnr/DlssNr_FinishedPicturePolicy.h>
 #include "DlssNr_Dx12_State.h"
 #include <atomic>
 #include <list>
@@ -657,8 +658,9 @@ void DlssNr_Dx12::ApplyFinished(ID3D12Resource* picture, ID3D12CommandQueue* que
                                 bool gameFrameHandoff)
 {
     std::lock_guard lock(_state->mutex);
-    if (!Config::Instance()->DlssNrFinishedPicture.value_or_default() ||
-        !Config::Instance()->DlssNrEnabled.value_or_default())
+    if (DlssNr::FinishedPicturePolicy::CancelPending(
+            Config::Instance()->DlssNrEnabled.value_or_default(),
+            Config::Instance()->DlssNrFinishedPicture.value_or_default()))
         _state->late.Cancel();
     else if (picture && queue)
         _state->ApplyFinishedColor(picture, queue, space, gameFrameHandoff);

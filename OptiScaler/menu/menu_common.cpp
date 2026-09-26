@@ -3275,6 +3275,38 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
                                (status.QualityMode == 0 && status.TemporalAttempted != resolved)))
         ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Save Settings and restart to apply.");
 
+    // Reno-derived latency analysis is intentionally monitor-only here. It reads the
+    // game's existing Reflex report and never owns sleep mode, frameLimitUs or FG state.
+    static uint64_t lastLatencyPollMs = 0;
+    static bool haveLatencyReport = false;
+    const uint64_t latencyNowMs = GetTickCount64();
+    if (latencyNowMs - lastLatencyPollMs >= 500)
+    {
+        haveLatencyReport = ReflexHooks::updateMfgLatencyData();
+        lastLatencyPollMs = latencyNowMs;
+    }
+
+    if (haveLatencyReport)
+    {
+        const auto& latency = ReflexHooks::mfgLatencyData;
+        if (latency.source_timing_confident && latency.source_interval_us != 0)
+        {
+            const double sourceFps = 1000000.0 / latency.source_interval_us;
+            ImGui::TextDisabled("Latency monitor: source %.1f FPS | queue %.2f ms | pipeline %.2f ms | GPU %.2f ms",
+                                sourceFps, latency.median_queue_wait_us / 1000.0,
+                                latency.median_pipeline_latency_us / 1000.0,
+                                latency.median_gpu_frame_time_us / 1000.0);
+        }
+        else
+        {
+            ImGui::TextDisabled("Latency monitor: collecting/stability gate 0x%02X (%u valid, %u consecutive)",
+                                latency.source_timing_issue_mask, latency.valid_latency_frames,
+                                latency.consecutive_timing_samples);
+        }
+    }
+    else
+        ImGui::TextDisabled("Latency monitor: waiting for a D3D Reflex report.");
+
     ImGui::Spacing();
 
     // Software frame pacing. Second because it is the rarer need: a freeze above 2X, not a setting every

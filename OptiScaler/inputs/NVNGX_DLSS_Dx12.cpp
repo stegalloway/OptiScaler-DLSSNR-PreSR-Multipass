@@ -71,7 +71,10 @@ static NVSDK_NGX_Result CommitDlssgEvaluationResult(NVSDK_NGX_Result result, int
 {
     if (result == NVSDK_NGX_Result_Success)
     {
-        State::Instance().dlssgDetectedInterpolationCount = submittedFrameCount;
+        auto& state = State::Instance();
+        state.dlssgDetectedInterpolationCount = submittedFrameCount;
+        state.dlssgLastActiveEvaluationFrame =
+            submittedFrameCount > 0 ? state.frameCount : uint64_t(-1);
         ReflexHooks::setDlssgFrameCount(submittedFrameCount);
         if (overrideGeneration.has_value())
             StreamlineHooks::acceptDlssgOverrides(overrideGeneration.value());
@@ -1267,8 +1270,10 @@ NVSDK_NGX_API NVSDK_NGX_Result NVSDK_NGX_D3D12_EvaluateFeature(ID3D12GraphicsCom
 
         if (evalWithoutFG == 6)
         {
-            // Report FG as disabled
+            // Report FG as disabled. The fresh-evaluation epoch is cleared too;
+            // the cached count must not retain presentation ownership.
             State::Instance().dlssgDetectedInterpolationCount = 0;
+            State::Instance().dlssgLastActiveEvaluationFrame = uint64_t(-1);
             ReflexHooks::setDlssgFrameCount(0);
         }
     }

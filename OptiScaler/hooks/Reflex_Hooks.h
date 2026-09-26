@@ -4,6 +4,7 @@
 
 #include "Hook_Utils.h"
 #include "low_latency/ll_util.h"
+#include <framegen/dlssg/MfgLatencyAnalysis.h>
 
 enum TimingType : uint32_t
 {
@@ -79,6 +80,10 @@ class ReflexHooks
     static bool isReflexHooked();
     static void* getHookedReflex(unsigned int InterfaceId);
     static bool updateTimingData();
+    // Read-only Reno-derived analysis of the existing 64-frame Reflex report.
+    // This never changes sleep mode, frame limits, markers or FG state.
+    static bool updateMfgLatencyData();
+    static MfgLatency::Report<MfgLatency::Frame> mfgLatencyData;
     static bool gameIsSendingMarkers();
 
     // For updating information about Reflex hooks

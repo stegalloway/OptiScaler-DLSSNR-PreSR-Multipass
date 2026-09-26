@@ -18,6 +18,7 @@ static inline IUnknown* _lastDev[20] = { 0 };
 // #define LOG_REFLEX_CALLS
 
 std::optional<TimingEntry> ReflexHooks::timingData[TimingType::TimingTypeCOUNT] {};
+MfgLatency::Report<MfgLatency::Frame> ReflexHooks::mfgLatencyData {};
 
 NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_MODE_PARAMS* pSetSleepModeParams)
 {
@@ -568,6 +569,44 @@ bool ReflexHooks::updateTimingData()
     }
 
     return false;
+}
+
+bool ReflexHooks::updateMfgLatencyData()
+{
+    if (!_inited || !_lastSleepDev || !o_NvAPI_D3D_GetLatency)
+        return false;
+
+    thread_local NV_LATENCY_RESULT_PARAMS results {};
+    results = {};
+    results.version = NV_LATENCY_RESULT_PARAMS_VER;
+    if (hkNvAPI_D3D_GetLatency(_lastSleepDev, &results) != NVAPI_OK)
+        return false;
+
+    MfgLatency::Frame frames[64] {};
+    for (size_t i = 0; i < 64; ++i)
+    {
+        const auto& f = results.frameReport[i];
+        frames[i] = {
+            f.frameID, f.inputSampleTime, f.simStartTime, f.simEndTime,
+            f.renderSubmitStartTime, f.renderSubmitEndTime,
+            f.presentStartTime, f.presentEndTime, f.driverStartTime, f.driverEndTime,
+            f.osRenderQueueStartTime, f.osRenderQueueEndTime,
+            f.gpuRenderStartTime, f.gpuRenderEndTime,
+            f.gpuActiveRenderTimeUs, f.gpuFrameTimeUs, f.cameraConstructedTime,
+            f.crossAdapterCopyTimeUs, f.aiFrameTimeUs
+        };
+    }
+
+    LARGE_INTEGER frequency {}, currentCounter {};
+    if (!QueryPerformanceFrequency(&frequency) || !QueryPerformanceCounter(&currentCounter))
+        return false;
+
+    static MfgLatency::History history {};
+    mfgLatencyData = MfgLatency::Analyze(
+        frames, static_cast<uint64_t>(frequency.QuadPart), GetTickCount64(),
+        reinterpret_cast<uintptr_t>(_lastSleepDev), history,
+        static_cast<uint64_t>(currentCounter.QuadPart));
+    return mfgLatencyData.valid_latency_frames != 0;
 }
 
 // For updating information about Reflex hooks

@@ -265,6 +265,9 @@ class State
     bool dlssgGameDMFGSupported = false;
     sl::DLSSGMode dlssgLastSetMode = sl::DLSSGMode::eOff;
     int dlssgDetectedInterpolationCount = 0;
+    // Real-frame epoch of the last successful DLSS-G evaluation that requested
+    // generated frames. Unlike the cached count, this expires at the next Present.
+    uint64_t dlssgLastActiveEvaluationFrame = uint64_t(-1);
 
     // DLSS
     bool dlssPresetsOverriddenExternally = false;
