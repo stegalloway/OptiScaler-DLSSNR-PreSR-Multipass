@@ -12,6 +12,7 @@
 
 #include "Hook_Utils.h"
 #include "DlssgOptionsState.h"
+#include <framegen/dlssg/MfgHdrUiDiagnostics.h>
 #include <atomic>
 
 struct Adapter
@@ -147,6 +148,7 @@ class StreamlineHooks
     static DlssgOptionsState::Snapshot getDlssgOverrides() { initializeDlssgOptions(); return dlssgOptionsState.Read(); }
     static void acceptDlssgOverrides(uint64_t generation) { dlssgOptionsState.Accepted(generation); }
     static bool hasGameDlssgOptions() { return gameDlssgOptionsObserved.load(std::memory_order_acquire); }
+    static MfgHdrUiDiagnostics::Snapshot getMfgHdrUiDiagnostics();
     static void applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool potentiallyActive);
 
     static void unhookInterposer();
@@ -181,6 +183,11 @@ class StreamlineHooks
   private:
     inline static sl::RenderAPI renderApi = sl::RenderAPI::eCount;
     inline static std::mutex setConstantsMutex {};
+    inline static std::mutex hdrUiDiagnosticsMutex {};
+    inline static MfgHdrUiDiagnostics::Snapshot hdrUiDiagnostics {};
+    static void observeMfgHdrUiTags(const sl::ViewportHandle& viewport, const sl::ResourceTag* tags, uint32_t count,
+                                    const sl::FrameToken* frame = nullptr);
+    static void observeMfgHdrUiOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options);
 
     // System caps
     inline static SystemCaps* systemCaps = nullptr;

@@ -3307,6 +3307,36 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
     else
         ImGui::TextDisabled("Latency monitor: waiting for a D3D Reflex report.");
 
+    const auto hdrUi = StreamlineHooks::getMfgHdrUiDiagnostics();
+    if (!hdrUi.seen)
+    {
+        ImGui::TextDisabled("HDR/UI monitor: waiting for game DLSS-G options and HUD/UI tags.");
+    }
+    else
+    {
+        const char* outputKind = !hdrUi.outputColorSpaceKnown ? "colour space unknown"
+                                                              : hdrUi.hdrOutput ? "HDR" : "SDR";
+        const char* recomposition = !hdrUi.options.uiRecompositionKnown
+                                        ? "unknown"
+                                        : hdrUi.options.uiRecompositionEnabled ? "on" : "off";
+        ImGui::TextDisabled("HDR/UI monitor: %s | options v%zu | UI recomposition %s | issues 0x%02X",
+                            outputKind, hdrUi.options.structVersion, recomposition, hdrUi.issues);
+
+        if (hdrUi.hudless.mentioned || hdrUi.uiColorAlpha.mentioned || hdrUi.uiAlpha.mentioned)
+        {
+            const auto& ui = hdrUi.uiColorAlpha.present ? hdrUi.uiColorAlpha : hdrUi.uiAlpha;
+            ImGui::TextDisabled("  Output %ux%u fmt %u | HUDless %ux%u fmt %u | UI %ux%u fmt %u | pair %s",
+                                hdrUi.output.width, hdrUi.output.height, hdrUi.output.format,
+                                hdrUi.hudless.width, hdrUi.hudless.height, hdrUi.hudless.format,
+                                ui.width, ui.height, ui.format, hdrUi.hasCompletePair ? "yes" : "no");
+        }
+
+        if (hdrUi.hdrOutput && hdrUi.hasCompletePair)
+            ImGui::TextDisabled("  HDR transfer compatibility is not provable from Streamline tags; no automatic action.");
+        else if (hdrUi.automaticRecompositionProven)
+            ImGui::TextDisabled("  Structurally compatible SDR HUD/UI pair observed; no automatic action.");
+    }
+
     ImGui::Spacing();
 
     // Software frame pacing. Second because it is the rarer need: a freeze above 2X, not a setting every

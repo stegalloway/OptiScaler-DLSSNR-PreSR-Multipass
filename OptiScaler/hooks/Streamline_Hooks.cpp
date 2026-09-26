@@ -23,6 +23,84 @@
 #include <magic_enum.hpp>
 #include "detours/detours.h"
 
+namespace
+{
+bool SameHdrUiResource(const MfgHdrUiDiagnostics::ResourceObservation& a,
+                       const MfgHdrUiDiagnostics::ResourceObservation& b)
+{
+    return a.mentioned == b.mentioned && a.present == b.present && a.cleared == b.cleared &&
+           a.valid == b.valid && a.hasExtension == b.hasExtension && a.width == b.width &&
+           a.height == b.height && a.resourceWidth == b.resourceWidth &&
+           a.resourceHeight == b.resourceHeight && a.format == b.format && a.lifecycle == b.lifecycle;
+}
+
+bool SameHdrUiOptions(const MfgHdrUiDiagnostics::OptionsObservation& a,
+                      const MfgHdrUiDiagnostics::OptionsObservation& b)
+{
+    return a.seen == b.seen && a.validKnownAbi == b.validKnownAbi &&
+           a.structVersion == b.structVersion && a.mode == b.mode &&
+           a.generatedFrames == b.generatedFrames && a.flags == b.flags &&
+           a.uiRecompositionKnown == b.uiRecompositionKnown &&
+           a.uiRecompositionEnabled == b.uiRecompositionEnabled &&
+           a.dynamicTargetKnown == b.dynamicTargetKnown &&
+           a.dynamicTargetFps == b.dynamicTargetFps;
+}
+
+bool IsHdrOutputForDiagnostics(const OutputColorSpace& output)
+{
+    if (!output.valid)
+        return false;
+    return output.transfer == ColorTransfer::PQ || output.transfer == ColorTransfer::Linear ||
+           output.transfer == ColorTransfer::HLG;
+}
+
+void RecomputeHdrUiSnapshot(MfgHdrUiDiagnostics::Snapshot& snapshot)
+{
+    uint32_t issues = MfgHdrUiDiagnostics::None;
+    const auto& output = snapshot.output;
+    const auto assess = [&](const MfgHdrUiDiagnostics::ResourceObservation& resource, bool hudless,
+                            bool colorAlpha)
+    {
+        if (!resource.mentioned)
+            return;
+        if (resource.hasExtension)
+            issues |= MfgHdrUiDiagnostics::OptionalExtensionPresent;
+        if (resource.present && !resource.valid)
+            issues |= MfgHdrUiDiagnostics::InvalidOptionalResource;
+        if (!resource.present)
+            return;
+        if (resource.width != 0 && resource.height != 0 && output.HasDimensions() &&
+            (resource.width != output.width || resource.height != output.height))
+            issues |= hudless ? MfgHdrUiDiagnostics::HudlessExtentMismatch : MfgHdrUiDiagnostics::UiExtentMismatch;
+        if (hudless && resource.format != 0 && output.HasFormat() && resource.format != output.format)
+            issues |= MfgHdrUiDiagnostics::HudlessFormatMismatch;
+        if (colorAlpha && MfgHdrUiDiagnostics::LowPrecisionUiAlpha(
+                              resource.format, MfgHdrUiDiagnostics::FormatApi::Dxgi))
+            issues |= MfgHdrUiDiagnostics::UiColorAlphaLowPrecision;
+    };
+
+    assess(snapshot.hudless, true, false);
+    assess(snapshot.uiColorAlpha, false, true);
+    assess(snapshot.uiAlpha, false, false);
+
+    const bool uiPresent = snapshot.uiColorAlpha.present || snapshot.uiAlpha.present;
+    snapshot.hasCompletePair = snapshot.hudless.present && uiPresent;
+    constexpr uint32_t structuralIssues = MfgHdrUiDiagnostics::InvalidOptionalResource |
+                                          MfgHdrUiDiagnostics::HudlessExtentMismatch |
+                                          MfgHdrUiDiagnostics::HudlessFormatMismatch |
+                                          MfgHdrUiDiagnostics::UiExtentMismatch |
+                                          MfgHdrUiDiagnostics::UiColorAlphaLowPrecision;
+    snapshot.structurallyValidForRecomposition =
+        snapshot.hasCompletePair && (issues & structuralIssues) == 0;
+    if (snapshot.hdrOutput &&
+        (snapshot.hudless.present || snapshot.uiColorAlpha.present || snapshot.uiAlpha.present))
+        issues |= MfgHdrUiDiagnostics::HdrTransferUnproven;
+    snapshot.automaticRecompositionProven =
+        !snapshot.hdrOutput && snapshot.structurallyValidForRecomposition;
+    snapshot.issues = issues;
+}
+} // namespace
+
 static bool IsSL1AndDLSSGActive()
 {
     return State::Instance().streamlineVersion.major == 1 && State::Instance().activeFgInput == FGInput::DLSSG &&
@@ -359,6 +437,126 @@ sl::Result StreamlineHooks::hkslGetFeatureFunction(sl::Feature feature, const ch
     return o_slGetFeatureFunction(feature, functionName, function);
 }
 
+MfgHdrUiDiagnostics::Snapshot StreamlineHooks::getMfgHdrUiDiagnostics()
+{
+    std::scoped_lock lock(hdrUiDiagnosticsMutex);
+    return hdrUiDiagnostics;
+}
+
+void StreamlineHooks::observeMfgHdrUiOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
+{
+    const auto observed = MfgHdrUiDiagnostics::ObserveOptions(options);
+    const auto& state = State::Instance();
+    const bool outputKnown = state.outputColorSpace.valid;
+    const bool hdr = IsHdrOutputForDiagnostics(state.outputColorSpace);
+
+    std::scoped_lock lock(hdrUiDiagnosticsMutex);
+    const bool changed = !SameHdrUiOptions(hdrUiDiagnostics.options, observed) ||
+                         hdrUiDiagnostics.outputColorSpaceKnown != outputKnown ||
+                         hdrUiDiagnostics.hdrOutput != hdr ||
+                         hdrUiDiagnostics.dxgiColorSpace != static_cast<uint32_t>(state.outputColorSpace.dxgiColorSpace);
+
+    hdrUiDiagnostics.seen = true;
+    ++hdrUiDiagnostics.optionCalls;
+    hdrUiDiagnostics.viewportKnown = true;
+    hdrUiDiagnostics.viewport = static_cast<uint32_t>(viewport);
+    hdrUiDiagnostics.outputColorSpaceKnown = outputKnown;
+    hdrUiDiagnostics.hdrOutput = hdr;
+    hdrUiDiagnostics.dxgiColorSpace = static_cast<uint32_t>(state.outputColorSpace.dxgiColorSpace);
+    hdrUiDiagnostics.options = observed;
+    RecomputeHdrUiSnapshot(hdrUiDiagnostics);
+
+    if (changed)
+    {
+        ++hdrUiDiagnostics.changes;
+        LOG_INFO("DLSSG HDR/UI monitor: options v{}, mode {}, generated {}, UI recomposition {}, HDR {}, issues 0x{:X}",
+                 observed.structVersion, observed.mode, observed.generatedFrames,
+                 observed.uiRecompositionKnown ? (observed.uiRecompositionEnabled ? "on" : "off") : "unknown",
+                 hdr, hdrUiDiagnostics.issues);
+    }
+}
+
+void StreamlineHooks::observeMfgHdrUiTags(const sl::ViewportHandle& viewport, const sl::ResourceTag* tags,
+                                          uint32_t count, const sl::FrameToken* frame)
+{
+    if (tags == nullptr || count == 0)
+        return;
+
+    const auto& state = State::Instance();
+    MfgHdrUiDiagnostics::OutputDescription fallback {
+        state.currentSwapchainDesc.BufferDesc.Width,
+        state.currentSwapchainDesc.BufferDesc.Height,
+        static_cast<uint32_t>(state.currentSwapchainDesc.BufferDesc.Format)
+    };
+    if (!fallback.HasDimensions())
+    {
+        fallback.width = static_cast<uint32_t>(std::max(0.0f, state.screenWidth));
+        fallback.height = static_cast<uint32_t>(std::max(0.0f, state.screenHeight));
+    }
+
+    const bool outputKnown = state.outputColorSpace.valid;
+    const bool hdr = IsHdrOutputForDiagnostics(state.outputColorSpace);
+    const auto assessment =
+        MfgHdrUiDiagnostics::AssessTags(tags, count, hdr, fallback, MfgHdrUiDiagnostics::FormatApi::Dxgi);
+    if (!assessment.relevant)
+        return;
+
+    std::scoped_lock lock(hdrUiDiagnosticsMutex);
+    const auto oldOutput = hdrUiDiagnostics.output;
+    const auto oldHudless = hdrUiDiagnostics.hudless;
+    const auto oldUiColorAlpha = hdrUiDiagnostics.uiColorAlpha;
+    const auto oldUiAlpha = hdrUiDiagnostics.uiAlpha;
+    const auto oldIssues = hdrUiDiagnostics.issues;
+    const auto oldHdr = hdrUiDiagnostics.hdrOutput;
+    const auto oldColorKnown = hdrUiDiagnostics.outputColorSpaceKnown;
+    const auto oldColorSpace = hdrUiDiagnostics.dxgiColorSpace;
+
+    hdrUiDiagnostics.seen = true;
+    ++hdrUiDiagnostics.tagBatches;
+    hdrUiDiagnostics.viewportKnown = true;
+    hdrUiDiagnostics.viewport = static_cast<uint32_t>(viewport);
+    hdrUiDiagnostics.frameKnown = frame != nullptr;
+    hdrUiDiagnostics.frame = frame != nullptr ? static_cast<uint32_t>(*frame) : 0;
+    if (frame != nullptr)
+        ++hdrUiDiagnostics.frameAwareBatches;
+    hdrUiDiagnostics.outputColorSpaceKnown = outputKnown;
+    hdrUiDiagnostics.hdrOutput = hdr;
+    hdrUiDiagnostics.dxgiColorSpace = static_cast<uint32_t>(state.outputColorSpace.dxgiColorSpace);
+    hdrUiDiagnostics.output = assessment.output;
+
+    if (assessment.hudless.mentioned)
+        hdrUiDiagnostics.hudless = assessment.hudless;
+    if (assessment.uiColorAlpha.mentioned)
+        hdrUiDiagnostics.uiColorAlpha = assessment.uiColorAlpha;
+    if (assessment.uiAlpha.mentioned)
+        hdrUiDiagnostics.uiAlpha = assessment.uiAlpha;
+
+    RecomputeHdrUiSnapshot(hdrUiDiagnostics);
+
+    const bool changed = oldOutput.width != hdrUiDiagnostics.output.width ||
+                         oldOutput.height != hdrUiDiagnostics.output.height ||
+                         oldOutput.format != hdrUiDiagnostics.output.format ||
+                         !SameHdrUiResource(oldHudless, hdrUiDiagnostics.hudless) ||
+                         !SameHdrUiResource(oldUiColorAlpha, hdrUiDiagnostics.uiColorAlpha) ||
+                         !SameHdrUiResource(oldUiAlpha, hdrUiDiagnostics.uiAlpha) ||
+                         oldIssues != hdrUiDiagnostics.issues || oldHdr != hdrUiDiagnostics.hdrOutput ||
+                         oldColorKnown != hdrUiDiagnostics.outputColorSpaceKnown ||
+                         oldColorSpace != hdrUiDiagnostics.dxgiColorSpace;
+
+    if (changed)
+    {
+        ++hdrUiDiagnostics.changes;
+        const auto& ui = hdrUiDiagnostics.uiColorAlpha.present ? hdrUiDiagnostics.uiColorAlpha
+                                                               : hdrUiDiagnostics.uiAlpha;
+        LOG_INFO("DLSSG HDR/UI monitor: viewport {}, frame {}, HDR {}, output {}x{} fmt {}, HUDless {}x{} fmt {}, "
+                 "UI {}x{} fmt {}, pair {}, issues 0x{:X}",
+                 hdrUiDiagnostics.viewport, hdrUiDiagnostics.frameKnown ? hdrUiDiagnostics.frame : 0, hdr,
+                 hdrUiDiagnostics.output.width, hdrUiDiagnostics.output.height, hdrUiDiagnostics.output.format,
+                 hdrUiDiagnostics.hudless.width, hdrUiDiagnostics.hudless.height, hdrUiDiagnostics.hudless.format,
+                 ui.width, ui.height, ui.format, hdrUiDiagnostics.hasCompletePair, hdrUiDiagnostics.issues);
+    }
+}
+
 sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const sl::ResourceTag* tags,
                                        uint32_t numTags, sl::CommandBuffer* cmdBuffer)
 {
@@ -376,6 +574,9 @@ sl::Result StreamlineHooks::hkslSetTag(const sl::ViewportHandle& viewport, const
         LOG_WARN("Game trying to remove a tag");
         return o_slSetTag(viewport, tags, numTags, cmdBuffer);
     }
+
+    if (State::Instance().activeFgInput == FGInput::DLSSG)
+        observeMfgHdrUiTags(viewport, tags, numTags);
 
     if (State::Instance().activeFgInput == FGInput::DLSSG &&
         State::Instance().gameQuirks[GameQuirk::IgnoreTagsWithoutHudlessForFG])
@@ -463,6 +664,9 @@ sl::Result StreamlineHooks::hkslSetTagForFrame(const sl::FrameToken& frame, cons
         LOG_WARN("Game trying to remove a tag");
         return o_slSetTagForFrame(frame, viewport, resources, numResources, cmdBuffer);
     }
+
+    if (State::Instance().activeFgInput == FGInput::DLSSG)
+        observeMfgHdrUiTags(viewport, resources, numResources, &frame);
 
     LOG_DEBUG("frameIndex: {}", static_cast<uint32_t>(frame));
 
@@ -1104,6 +1308,8 @@ bool StreamlineHooks::hkcommon_slOnPluginLoad(sl::param::IParameters* params, co
 
 sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
 {
+    observeMfgHdrUiOptions(viewport, options);
+
     // Initialise scalar intent when the game first submits FG options, rather
     // than during interposer setup before swap-chain creation.
     initializeDlssgOptions();
