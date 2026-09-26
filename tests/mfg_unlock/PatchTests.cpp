@@ -99,6 +99,12 @@ int main(int argc, char** argv) try
         {
             const auto qualityPart = mode.substr(std::strlen("runtime-quality-"));
             Config::Instance()->FGDLSSGAdaQualityMode.value = std::stoi(qualityPart);
+            if (Config::Instance()->FGDLSSGAdaQualityMode.value == 5)
+            {
+                for (const int px : {16, 32, 48, 64})
+                    if (qualityPart.find("-" + std::to_string(px)) != std::string::npos)
+                        Config::Instance()->FGDLSSGAdaMagnitudeThresholdPx.value = px;
+            }
             Config::Instance()->FGDLSSGAdaWarpBlend.enabled = mode.ends_with("-warp");
         }
         const bool failClean = mode.ends_with("-fail-clean");
@@ -162,9 +168,17 @@ int main(int argc, char** argv) try
         {
             Expect(status.QualityMode == Config::Instance()->FGDLSSGAdaQualityMode.value,
                    "Requested quality mode was not recorded");
-            Expect(status.KernelsRewritten == 3, "Quality path did not select all three kernel roles");
-            Expect(status.QualityWarp == (Config::Instance()->FGDLSSGAdaWarpBlend.enabled || status.QualityMode == 4),
-                   "Requested warp path did not commit");
+            const unsigned expectedKernelCount = status.QualityMode == 5 ? 1u : 3u;
+            Expect(status.KernelsRewritten == expectedKernelCount,
+                   "Quality path selected an unexpected number of kernel roles");
+            const bool expectedWarp = status.QualityMode == 4 ||
+                                      (Config::Instance()->FGDLSSGAdaWarpBlend.enabled &&
+                                       status.QualityMode >= 1 && status.QualityMode <= 3);
+            Expect(status.QualityWarp == expectedWarp, "Requested warp path did not commit");
+            if (status.QualityMode == 5)
+                Expect(status.QualityMagnitudeThresholdPx ==
+                           Config::Instance()->FGDLSSGAdaMagnitudeThresholdPx.value,
+                       "Requested calibrated magnitude threshold was not recorded");
         }
         FreeLibrary(module);
         std::cout << "PASS runtime image patch (simulated Ada; no GPU execution)\n";

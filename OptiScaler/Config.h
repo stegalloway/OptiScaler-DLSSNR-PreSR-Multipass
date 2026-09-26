@@ -729,8 +729,9 @@ class Config
     CustomOptional<bool> FGDLSSGAdaMfgUnlock { false }; // RTX 40 only; restart required
     CustomOptional<std::string, NoDefault> FGDLSSGAdaTemporalFix; // Auto / Retarget / Ptx
     CustomOptional<bool> FGDLSSGAdaFlipMeteringPatch { false };   // pin sl.dlss_g to software frame pacing
-    CustomOptional<int> FGDLSSGAdaQualityMode { 0 }; // 0 current, 1 framework, 2 Balanced, 3 Aggressive, 4 Adaptive
-    CustomOptional<bool> FGDLSSGAdaWarpBlend { false }; // legacy mode only; ignored in Adaptive
+    CustomOptional<int> FGDLSSGAdaQualityMode { 0 }; // 0 current, 1 framework, 2 Balanced, 3 Aggressive, 4 Adaptive, 5 calibrated magnitude
+    CustomOptional<int> FGDLSSGAdaMagnitudeThresholdPx { 64 }; // mode 5 only: 16/32/48/64 display pixels
+    CustomOptional<bool> FGDLSSGAdaWarpBlend { false }; // legacy modes 1-3 only; ignored in Adaptive/magnitude
 #endif
     CustomOptional<int> FGDLSSGInterpolationCount { 1 }; // For Opti's own SL instance
     CustomOptional<bool> FGDLSSGUseGamesReflexMarkers { true };

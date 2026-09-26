@@ -40,6 +40,7 @@ struct Config
     TestString FGDLSSGAdaTemporalFix;
     TestOption FGDLSSGAdaFlipMeteringPatch;
     TestInt FGDLSSGAdaQualityMode;
+    TestInt FGDLSSGAdaMagnitudeThresholdPx { 64 };
     TestOption FGDLSSGAdaWarpBlend;
     TestBoolOr DisableFlipMetering;
     static Config* Instance() { static Config config; return &config; }

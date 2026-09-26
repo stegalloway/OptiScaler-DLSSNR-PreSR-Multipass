@@ -42,6 +42,15 @@ namespace mfgunlock::blackwell::generated_thin_geometry {
 #define MFGUNLOCK_HAS_GENERATED_THIN_GEOMETRY_CUBINS 0
 #endif
 
+#if __has_include("./magnitude_cubins.generated.hpp")
+namespace mfgunlock::blackwell::generated_magnitude {
+#include "./magnitude_cubins.generated.hpp"
+}
+#define MFGUNLOCK_HAS_GENERATED_MAGNITUDE_CUBINS 1
+#else
+#define MFGUNLOCK_HAS_GENERATED_MAGNITUDE_CUBINS 0
+#endif
+
 namespace mfgunlock::blackwell {
 inline bool g_refinement_enabled = false; // immutable after startup
 inline bool g_geometry_confidence_v2_enabled = false; // research-only, startup-scoped
@@ -248,6 +257,26 @@ inline const generated_thin_geometry::CubinVariant* MatchScatterVariant(
         replacement.slot_size == slot_size &&
         replacement.source_fnv1a64 == Fnv1a64(payload, slot_size) &&
         replacement.data != nullptr && replacement.size != 0 && replacement.size <= slot_size) {
+      return &replacement;
+    }
+  }
+  return nullptr;
+}
+#endif
+
+#if MFGUNLOCK_HAS_GENERATED_MAGNITUDE_CUBINS
+inline const generated_magnitude::MagnitudeCubinVariant* MatchMagnitudeVariant(
+    const ElfFingerprint& fingerprint, const uint8_t* payload, size_t slot_size,
+    unsigned int display_threshold_px) {
+  for (const auto& replacement : generated_magnitude::kMagnitudeCubins) {
+    if (replacement.display_threshold_px != display_threshold_px) continue;
+    if (replacement.source_text == fingerprint.text &&
+        replacement.source_shared == fingerprint.shared &&
+        replacement.source_regs == fingerprint.registers &&
+        replacement.slot_size == slot_size &&
+        replacement.source_fnv1a64 == Fnv1a64(payload, slot_size) &&
+        replacement.data != nullptr && replacement.size != 0 &&
+        replacement.size <= slot_size) {
       return &replacement;
     }
   }

@@ -821,8 +821,10 @@ unsigned int ProviderExportBits(HMODULE module)
 bool BuildQualityPlan(HMODULE module, MfgQuality::Options quality,
                       std::vector<MfgUnlock::Transaction::Patch>& plan, MfgQuality::Result& prepared)
 {
-    if (!BuildGatePlan(module, plan) || !MfgQuality::Prepare(module, quality, {}, prepared) ||
-        prepared.writes.size() < 3)
+    if (!BuildGatePlan(module, plan) || !MfgQuality::Prepare(module, quality, {}, prepared))
+        return false;
+    const size_t minimumWrites = quality.mode == 5 ? 1u : 3u;
+    if (prepared.writes.size() < minimumWrites)
         return false;
 
     for (const auto& write : prepared.writes)
@@ -961,9 +963,11 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
             g_status.TemporalAttempted = method;
             const MfgQuality::Options quality {
                 Config::Instance()->FGDLSSGAdaQualityMode.value_or_default(),
-                Config::Instance()->FGDLSSGAdaWarpBlend.value_or_default()
+                Config::Instance()->FGDLSSGAdaWarpBlend.value_or_default(),
+                Config::Instance()->FGDLSSGAdaMagnitudeThresholdPx.value_or_default()
             };
             g_status.QualityMode = quality.mode;
+            g_status.QualityMagnitudeThresholdPx = quality.mode == 5 ? quality.magnitudeThresholdPx : 0;
 
             std::vector<MfgUnlock::Transaction::Patch> plan;
             unsigned int kernelCount = 0;
@@ -976,7 +980,7 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
                 // One exclusive backend per process: no broad Retarget or PTX
                 // descriptor writes are combined with the quality profile.
                 planned = GuardedBuildQualityPlan(module, quality, plan, qualityResult);
-                if (planned) kernelCount = 3;
+                if (planned) kernelCount = quality.mode == 5 ? 1u : 3u;
             }
             else if (method == TemporalMethod::Retarget)
                 planned = GuardedBuildRetargetPlan(module, plan, kernelCount);
@@ -1038,9 +1042,13 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
             if (quality.mode != 0)
             {
                 RetainQualityAllocation(qualityResult.warpAllocation);
-                g_status.QualityWarp = quality.warp || quality.mode == 4;
-                g_status.QualityDetail = std::format("quality profile {} with {}", quality.mode,
-                                                     g_status.QualityWarp ? "warp path" : "native warp");
+                g_status.QualityWarp = quality.mode == 4 ||
+                                       (quality.warp && quality.mode >= 1 && quality.mode <= 3);
+                g_status.QualityDetail = quality.mode == 5
+                                             ? std::format("calibrated magnitude profile at {} display px",
+                                                           quality.magnitudeThresholdPx)
+                                             : std::format("quality profile {} with {}", quality.mode,
+                                                           g_status.QualityWarp ? "warp path" : "native warp");
             }
             g_status.TemporalDetail = quality.mode != 0
                                           ? "complete quality profile and gate transaction"

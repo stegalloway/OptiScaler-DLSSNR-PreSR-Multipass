@@ -4,6 +4,7 @@
 #include "MenuFramePolicy.h"
 #if defined(OPTISCALER_RTX40_MFG)
 #include <framegen/dlssg/MfgUnlock.h>
+#include <framegen/dlssg/MfgMagnitudeProfile.h>
 #endif
 
 #include <algorithm>
@@ -3219,26 +3220,60 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
 
     const char* qualityNames[] = {
         "Current working engine", "Legacy framework baseline", "Legacy Balanced boundaries",
-        "Legacy Aggressive boundaries", "Adaptive Quality 1.1.5"
+        "Legacy Aggressive boundaries", "Adaptive Quality 1.1.5", "Calibrated magnitude-only"
     };
-    int qualityMode = std::clamp(config->FGDLSSGAdaQualityMode.value_or_default(), 0, 4);
-    if (ImGui::Combo("FG kernel quality##ada", &qualityMode, qualityNames, 5))
+    int qualityMode = std::clamp(config->FGDLSSGAdaQualityMode.value_or_default(), 0, 5);
+    if (ImGui::Combo("FG kernel quality##ada", &qualityMode, qualityNames, 6))
         config->FGDLSSGAdaQualityMode = qualityMode;
     showHelp("Experimental, exact DLSS-G 310.9.1 only. Quality profiles replace the current timing-fix\n"
              "backend for this session; they do not stack with it. Adaptive coordinates boundary,\n"
-             "warp and inpaint changes and does not stack with the legacy profiles.\n"
+             "warp and inpaint changes. Calibrated magnitude-only changes only the validated motion\n"
+             "retention gate and has its own display-pixel threshold selector.\n"
              "Current working engine remains the default. Save Settings and restart to apply.\n"
              "ini: [DLSSG] AdaMfgQualityMode.");
 
+    int magnitudeThresholdPx = config->FGDLSSGAdaMagnitudeThresholdPx.value_or_default();
+    int magnitudeThresholdIndex = magnitudeThresholdPx == 16 ? 0 :
+                                  magnitudeThresholdPx == 32 ? 1 :
+                                  magnitudeThresholdPx == 48 ? 2 : 3;
+    const char* magnitudeThresholdNames[] = { "16 px", "32 px", "48 px", "64 px (legacy control)" };
+    ImGui::BeginDisabled(qualityMode != 5);
+    if (ImGui::Combo("Magnitude threshold##ada", &magnitudeThresholdIndex, magnitudeThresholdNames, 4))
+    {
+        static constexpr int thresholds[] = { 16, 32, 48, 64 };
+        config->FGDLSSGAdaMagnitudeThresholdPx = thresholds[magnitudeThresholdIndex];
+        magnitudeThresholdPx = thresholds[magnitudeThresholdIndex];
+    }
+    ImGui::EndDisabled();
+    showHelp("Mode 5 only. Miles calibration measured exactly 2 display pixels per motion-grid unit at\n"
+             "3440x1440, so the validated sweep maps 8/16/24/32 grid units to 16/32/48/64 display px.\n"
+             "The display-pixel labels are validated for that output only; other output sizes are unverified.\n"
+             "64 px reproduces the original research cubin; it is a control, not a claimed best value.\n"
+             "ini: [DLSSG] AdaMfgMagnitudeThresholdPx. Save Settings and restart to apply.");
+
+    if (qualityMode == 5)
+    {
+        const auto width = State::Instance().currentSwapchainDesc.BufferDesc.Width;
+        const auto height = State::Instance().currentSwapchainDesc.BufferDesc.Height;
+        if (width != 0 && height != 0 &&
+            (width != MfgMagnitude::kCalibrationOutputWidth ||
+             height != MfgMagnitude::kCalibrationOutputHeight))
+        {
+            ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f),
+                               "Magnitude calibration is 3440x1440; current output is %ux%u (unverified).",
+                               width, height);
+        }
+    }
+
     bool warpBlend = config->FGDLSSGAdaWarpBlend.value_or_default();
-    ImGui::BeginDisabled(qualityMode == 0 || qualityMode == 4);
+    ImGui::BeginDisabled(qualityMode == 0 || qualityMode >= 4);
     if (ImGui::Checkbox("Legacy Warp Blend##ada", &warpBlend))
         config->FGDLSSGAdaWarpBlend = warpBlend;
     ImGui::EndDisabled();
-    showHelp("A separate legacy colour-warp experiment. Ignored with the current engine or Adaptive\n"
-             "Quality. Earlier RDR2 tests raised an NRSTAB interaction concern, so leave it off\n"
-             "unless testing that path alone. Save Settings and restart to apply.\n"
-             "ini: [DLSSG] AdaMfgWarpBlend.");
+    showHelp("A separate legacy colour-warp experiment for quality modes 1-3 only. Ignored with the\n"
+             "current engine, Adaptive Quality and calibrated magnitude-only. Earlier RDR2 tests raised\n"
+             "an NRSTAB interaction concern, so leave it off unless testing that path alone.\n"
+             "ini: [DLSSG] AdaMfgWarpBlend. Save Settings and restart to apply.");
 
     // The result, directly under the control (which method applied, or the specific reason it did not).
     if (status.PatchFailed)
@@ -3252,9 +3287,13 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
     }
     else if (status.KernelsRewritten > 0)
     {
-        if (status.QualityMode != 0)
+        if (status.QualityMode == 5)
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f),
+                               "Applied: calibrated magnitude-only (%d px, %u kernels)",
+                               status.QualityMagnitudeThresholdPx, status.KernelsRewritten);
+        else if (status.QualityMode != 0)
             ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1.0f), "Applied: %s (%u kernels, warp %s)",
-                               qualityNames[std::clamp(status.QualityMode, 0, 4)], status.KernelsRewritten,
+                               qualityNames[std::clamp(status.QualityMode, 0, 5)], status.KernelsRewritten,
                                status.QualityWarp ? "on" : "off");
         else
         {
@@ -3272,6 +3311,8 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
 
     if (status.ModuleFound && (status.QualityMode != qualityMode ||
                                (status.QualityMode > 0 && status.QualityMode < 4 && status.QualityWarp != warpBlend) ||
+                               (status.QualityMode == 5 &&
+                                status.QualityMagnitudeThresholdPx != magnitudeThresholdPx) ||
                                (status.QualityMode == 0 && status.TemporalAttempted != resolved)))
         ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Save Settings and restart to apply.");
 

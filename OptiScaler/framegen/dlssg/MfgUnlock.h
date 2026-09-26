@@ -57,7 +57,8 @@ struct Status
     unsigned int KernelsRewritten = 0; // kernel groups relabelled, or descriptors redirected to the PTX rebuild
     TemporalMethod TemporalAttempted = TemporalMethod::None; // what the configuration asked for at load
     std::string TemporalDetail;                              // why the attempt did not land, or what it did
-    int QualityMode = 0; // 0 current engine, 1-3 legacy A/B, 4 Reno 1.1.5 Adaptive
+    int QualityMode = 0; // 0 current engine, 1-3 legacy A/B, 4 Reno 1.1.5 Adaptive, 5 calibrated magnitude
+    int QualityMagnitudeThresholdPx = 0; // nonzero only when mode 5 is actually selected
     bool QualityWarp = false; // actual requested quality warp path, never inferred from INI alone
     std::string QualityDetail;
     std::string SnippetVersion; // file version of nvngx_dlssg.dll, empty if it could not be read

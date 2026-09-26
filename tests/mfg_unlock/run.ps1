@@ -53,10 +53,13 @@ if ($Runtime) {
     & "$out/mfg-patch.exe" runtime $Runtime
     if ($LASTEXITCODE) { throw 'Installed runtime patch smoke failed' }
     foreach ($qualityCase in @('runtime-quality-1', 'runtime-quality-2', 'runtime-quality-3',
-                               'runtime-quality-4', 'runtime-quality-1-warp',
-                               'runtime-quality-2-warp', 'runtime-quality-3-warp',
+                               'runtime-quality-4', 'runtime-quality-5-16', 'runtime-quality-5-32',
+                               'runtime-quality-5-48', 'runtime-quality-5-64',
+                               'runtime-quality-1-warp', 'runtime-quality-2-warp', 'runtime-quality-3-warp',
                                'runtime-quality-4-fail-clean', 'runtime-quality-4-fail-unsafe',
-                               'runtime-quality-4-bad-fingerprint')) {
+                               'runtime-quality-4-bad-fingerprint',
+                               'runtime-quality-5-64-fail-clean', 'runtime-quality-5-64-fail-unsafe',
+                               'runtime-quality-5-64-bad-fingerprint')) {
         & "$out/mfg-patch.exe" $qualityCase $Runtime
         if ($LASTEXITCODE) { throw "Quality profile failed: $qualityCase" }
     }

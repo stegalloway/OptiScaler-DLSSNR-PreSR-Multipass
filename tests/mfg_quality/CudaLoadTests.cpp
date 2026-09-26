@@ -65,6 +65,23 @@ int main(int argc, char** argv) try
     Require(adaptivePrepared.warpAllocation &&
                 std::memcmp(adaptivePrepared.warpAllocation,adaptiveRebuild.data(),adaptiveRebuild.size())==0,
             "production adapter did not select the complete adaptive warp profile");
+
+#if MFGUNLOCK_HAS_GENERATED_MAGNITUDE_CUBINS
+    for (const int px : {16, 32, 48, 64})
+    {
+        MfgQuality::Result magnitudePrepared;
+        Require(MfgQuality::Prepare(provider,{5,false,px},{},magnitudePrepared),
+                magnitudePrepared.detail.c_str());
+        Require(magnitudePrepared.writes.size()==1,
+                "magnitude-only profile must rewrite exactly one kernel role");
+        Require(magnitudePrepared.warpAllocation==nullptr,
+                "magnitude-only profile must not allocate or redirect warp");
+        MfgQuality::DiscardUncommitted(magnitudePrepared);
+    }
+#else
+    throw std::runtime_error("calibrated magnitude table absent");
+#endif
+
     auto driver=LoadLibraryExW(L"nvcuda.dll",nullptr,LOAD_LIBRARY_SEARCH_SYSTEM32);
     Require(driver!=nullptr,"system CUDA driver missing");
     auto init=reinterpret_cast<int(*)(unsigned)>(GetProcAddress(driver,"cuInit"));
@@ -122,7 +139,7 @@ int main(int argc, char** argv) try
         Check(getFunction(&function, module, "Kernel_EstimateIntermMvecsScatter"),
               "magnitude-only kernel selection");
         Check(unload(module), "unload magnitude-only cubin");
-        std::cout << "PASS CUDA loads magnitude-only research cubin (not calibrated/deployed)\n";
+        std::cout << "PASS CUDA loads calibrated magnitude candidate cubin (load-only; not gameplay-validated)\n";
     }
     Check(destroy(context),"destroy");
     MfgQuality::DiscardUncommitted(adaptivePrepared);

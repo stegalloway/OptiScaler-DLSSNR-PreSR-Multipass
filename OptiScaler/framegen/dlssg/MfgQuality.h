@@ -4,13 +4,15 @@
 #pragma once
 #include "mfgquality/blackwell.hpp"
 #include "mfgquality/thin_geometry.hpp"
+#include "MfgMagnitudeProfile.h"
 
 namespace MfgQuality
 {
 struct Options
 {
-    int mode = 0; // 0 existing, 1 framework, 2 Balanced, 3 Aggressive, 4 Adaptive 1.1.5
+    int mode = 0; // 0 existing, 1 framework, 2 Balanced, 3 Aggressive, 4 Adaptive 1.1.5, 5 magnitude-only
     bool warp = false;
+    int magnitudeThresholdPx = MfgMagnitude::kDefaultDisplayThresholdPx;
     bool operator==(const Options&) const = default;
 };
 
@@ -74,8 +76,10 @@ inline bool Prepare(HMODULE module, Options options, std::vector<Write> gates, R
 {
     namespace bw = mfgunlock::blackwell;
     namespace tg = mfgunlock::thingeometry;
-    if (options.mode < 1 || options.mode > 4)
+    if (options.mode < 1 || options.mode > 5)
     { result.detail = "experimental backend not selected"; return false; }
+    if (options.mode == 5 && !MfgMagnitude::IsValidDisplayThresholdPx(options.magnitudeThresholdPx))
+    { result.detail = "unsupported calibrated magnitude threshold"; return false; }
     std::string version;
     if (!tg::IsSupportedProvider(module, version, result.detail) || version != "310.9.1")
     { result.detail = "only exact 310.9.1 provider supported: " + result.detail; return false; }
@@ -100,9 +104,33 @@ inline bool Prepare(HMODULE module, Options options, std::vector<Write> gates, R
     {
         if (bw::internal::Fnv1a64(candidate.payload, candidate.slot_size) != candidate.replacement->source_fnv1a64)
         { result.detail = "source cubin hash mismatch (modified/unsupported provider); no changes"; return false; }
+
+        // Magnitude-only is intentionally a one-kernel experiment. The frozen
+        // specification leaves native inpaint and inpaint-decision roles
+        // untouched; retargeting them would turn this into a framework profile.
+        if (options.mode == 5 && candidate.role != bw::KernelRole::MotionVector)
+            continue;
+
         const uint8_t* data = candidate.replacement->data;
         size_t size = candidate.replacement->size;
-        if (candidate.role == bw::KernelRole::MotionVector && options.mode >= 2)
+        if (candidate.role == bw::KernelRole::MotionVector && options.mode == 5)
+        {
+#if MFGUNLOCK_HAS_GENERATED_MAGNITUDE_CUBINS
+            const bw::internal::ElfFingerprint fp {candidate.replacement->text, candidate.replacement->shared,
+                                                   candidate.replacement->regs};
+            const auto* variant = bw::internal::MatchMagnitudeVariant(
+                fp, candidate.payload, candidate.slot_size,
+                static_cast<unsigned int>(options.magnitudeThresholdPx));
+            if (!variant)
+            { result.detail = "requested calibrated magnitude variant missing; no fallback substitution"; return false; }
+            data = variant->data;
+            size = variant->size;
+#else
+            result.detail = "local calibrated magnitude table absent; magnitude mode disabled";
+            return false;
+#endif
+        }
+        else if (candidate.role == bw::KernelRole::MotionVector && options.mode >= 2)
         {
             const bw::internal::ElfFingerprint fp {candidate.replacement->text, candidate.replacement->shared,
                                                    candidate.replacement->regs};
@@ -130,7 +158,8 @@ inline bool Prepare(HMODULE module, Options options, std::vector<Write> gates, R
         std::memcpy(replacement.data(), data, size);
         plan.push_back(MakeWrite(candidate.payload, std::move(replacement)));
     }
-    if (options.warp || options.mode == 4)
+    const bool legacyWarp = options.warp && options.mode >= 1 && options.mode <= 3;
+    if (legacyWarp || options.mode == 4)
     {
         const auto* profile = tg::internal::ProfileFor(tg::Mechanism::ValidatedWarpBlend);
         tg::internal::LocatedFatbin located;
