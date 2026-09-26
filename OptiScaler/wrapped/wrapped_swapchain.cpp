@@ -22,6 +22,7 @@
 #include <hooks/Xell_Hooks.h>
 
 #include <magic_enum.hpp>
+#include <atomic>
 #include <mutex>
 
 #ifdef LOW_LATENCY_INPUTS
@@ -591,9 +592,23 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         const auto& fgState = State::Instance();
         const bool freshDlssgOwnership = DlssNr::FinishedPicturePolicy::FreshDlssgOwnership(
             fgState.dlssgDetectedInterpolationCount, fgState.dlssgLastActiveEvaluationFrame, fgState.frameCount);
-        if (DlssNr::FinishedPicturePolicy::AllowWrappedPicture(
-                cq != nullptr, xeFgGamePicture, fg != nullptr,
-                fg != nullptr && fg->IsActive(), fg != nullptr && fg->IsPaused(), freshDlssgOwnership))
+        const bool allowWrappedPicture = DlssNr::FinishedPicturePolicy::AllowWrappedPicture(
+            cq != nullptr, xeFgGamePicture, fg != nullptr,
+            fg != nullptr && fg->IsActive(), fg != nullptr && fg->IsPaused(), freshDlssgOwnership);
+
+        // Transition-only diagnostic for live finished-picture ownership validation.
+        // This does not alter routing; it records when native/game-owned DLSS-G
+        // gains or releases the current real-frame presentation epoch.
+        static std::atomic<int> lastFreshDlssgOwnership { -1 };
+        const int ownershipState = freshDlssgOwnership ? 1 : 0;
+        if (lastFreshDlssgOwnership.exchange(ownershipState, std::memory_order_relaxed) != ownershipState)
+        {
+            LOG_INFO("DLSS-NR ownership transition: fresh_dlssg={} wrapped_finished={} generated={} eval_epoch={} present_epoch={}",
+                     freshDlssgOwnership, allowWrappedPicture, fgState.dlssgDetectedInterpolationCount,
+                     fgState.dlssgLastActiveEvaluationFrame, fgState.frameCount);
+        }
+
+        if (allowWrappedPicture)
             DlssNr::ApplyToFinishedPicture(pSwapChain, cq);
         else if (isD3D11 && State::Instance().swapchainInteropApi == SwapchainInteropApi::None)
             DlssNr::ApplyToFinishedPictureDx11(pSwapChain);
