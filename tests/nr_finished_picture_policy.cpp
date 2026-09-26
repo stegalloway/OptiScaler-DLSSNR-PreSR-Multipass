@@ -28,12 +28,23 @@ int main()
     assert(AllowWrappedPicture(true, false, true, false, false, false));
     assert(AllowWrappedPicture(true, false, true, true, true, false));
 
-    // Native/external DLSS-G needs no OptiScaler FG object, but fresh runtime
-    // evidence suppresses only the ordinary post-provider picture.
-    assert(!AllowWrappedPicture(true, false, false, false, false, true));
+    // Native/external DLSS-G needs no OptiScaler FG object. Before Streamline
+    // options have been observed, the fresh evaluation epoch is the fallback.
+    assert(DlssgPresentationOwnership(false, false, true));
+    assert(!DlssgPresentationOwnership(false, false, false));
 
-    // FG-off recovery is immediate once the evaluation epoch becomes stale.
-    assert(AllowWrappedPicture(true, false, false, false, false, false));
+    // Once successful Streamline options exist they are authoritative across
+    // all generated Presents. Active options outlive one evaluation epoch.
+    assert(DlssgPresentationOwnership(true, true, false));
+
+    // A successful FG-off options call immediately releases ownership even if
+    // the last evaluation epoch/count is still cached.
+    assert(!DlssgPresentationOwnership(true, false, true));
+
+    assert(!AllowWrappedPicture(true, false, false, false, false,
+                                DlssgPresentationOwnership(true, true, false)));
+    assert(AllowWrappedPicture(true, false, false, false, false,
+                               DlssgPresentationOwnership(true, false, true)));
 
     // Cancellation is deliberately independent from FG ownership.
     assert(!CancelPending(true, true));
@@ -41,6 +52,6 @@ int main()
     assert(CancelPending(true, false));
     assert(CancelPending(false, false));
 
-    std::puts("PASS: finished-picture ownership freshness and cancellation separation");
+    std::puts("PASS: finished-picture options ownership, fallback freshness and cancellation separation");
     return 0;
 }

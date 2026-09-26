@@ -265,8 +265,15 @@ class State
     bool dlssgGameDMFGSupported = false;
     sl::DLSSGMode dlssgLastSetMode = sl::DLSSGMode::eOff;
     int dlssgDetectedInterpolationCount = 0;
-    // Real-frame epoch of the last successful DLSS-G evaluation that requested
-    // generated frames. Unlike the cached count, this expires at the next Present.
+
+    // Successful game-owned Streamline DLSS-G options are authoritative for
+    // presentation ownership. In MFG, one real evaluation can feed several
+    // Presents, so an exact evaluation==Present epoch test is too short-lived.
+    std::atomic_bool dlssgOptionsObserved { false };
+    std::atomic_bool dlssgOptionsActive { false };
+    std::atomic_int dlssgOptionsGeneratedFrames { 0 };
+
+    // Fallback for direct NGX paths that never submit Streamline options.
     uint64_t dlssgLastActiveEvaluationFrame = uint64_t(-1);
 
     // DLSS

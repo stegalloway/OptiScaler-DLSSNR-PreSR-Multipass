@@ -590,21 +590,29 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                                      State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
                                      fg->Hwnd() == hWnd;
         const auto& fgState = State::Instance();
-        const bool freshDlssgOwnership = DlssNr::FinishedPicturePolicy::FreshDlssgOwnership(
+        const bool fallbackFreshEvaluationOwnership = DlssNr::FinishedPicturePolicy::FreshDlssgOwnership(
             fgState.dlssgDetectedInterpolationCount, fgState.dlssgLastActiveEvaluationFrame, fgState.frameCount);
+        const bool optionsObserved = fgState.dlssgOptionsObserved.load(std::memory_order_acquire);
+        const bool optionsActive = fgState.dlssgOptionsActive.load(std::memory_order_relaxed);
+        const int optionsGeneratedFrames =
+            fgState.dlssgOptionsGeneratedFrames.load(std::memory_order_relaxed);
+        const bool dlssgPresentationOwnership = DlssNr::FinishedPicturePolicy::DlssgPresentationOwnership(
+            optionsObserved, optionsActive, fallbackFreshEvaluationOwnership);
         const bool allowWrappedPicture = DlssNr::FinishedPicturePolicy::AllowWrappedPicture(
             cq != nullptr, xeFgGamePicture, fg != nullptr,
-            fg != nullptr && fg->IsActive(), fg != nullptr && fg->IsPaused(), freshDlssgOwnership);
+            fg != nullptr && fg->IsActive(), fg != nullptr && fg->IsPaused(), dlssgPresentationOwnership);
 
-        // Transition-only diagnostic for live finished-picture ownership validation.
-        // This does not alter routing; it records when native/game-owned DLSS-G
-        // gains or releases the current real-frame presentation epoch.
-        static std::atomic<int> lastFreshDlssgOwnership { -1 };
-        const int ownershipState = freshDlssgOwnership ? 1 : 0;
-        if (lastFreshDlssgOwnership.exchange(ownershipState, std::memory_order_relaxed) != ownershipState)
+        // Transition-only diagnostic. Successful Streamline options remain
+        // authoritative across every generated Present in MFG; the exact
+        // evaluation epoch is only a fallback for direct NGX ownership.
+        static std::atomic<int> lastDlssgOwnership { -1 };
+        const int ownershipState = dlssgPresentationOwnership ? 1 : 0;
+        if (lastDlssgOwnership.exchange(ownershipState, std::memory_order_relaxed) != ownershipState)
         {
-            LOG_INFO("DLSS-NR ownership transition: fresh_dlssg={} wrapped_finished={} generated={} eval_epoch={} present_epoch={}",
-                     freshDlssgOwnership, allowWrappedPicture, fgState.dlssgDetectedInterpolationCount,
+            LOG_INFO("DLSS-NR ownership transition: dlssg={} source={} wrapped_finished={} options_generated={} "
+                     "eval_generated={} eval_epoch={} present_epoch={}",
+                     dlssgPresentationOwnership, optionsObserved ? "streamline_options" : "evaluation_fallback",
+                     allowWrappedPicture, optionsGeneratedFrames, fgState.dlssgDetectedInterpolationCount,
                      fgState.dlssgLastActiveEvaluationFrame, fgState.frameCount);
         }
 

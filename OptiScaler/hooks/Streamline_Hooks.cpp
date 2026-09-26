@@ -1346,8 +1346,14 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 #endif
         if (result == sl::Result::eOk && options.structVersion > 5)
         {
-            State::Instance().dlssgLastSetMode = options.mode;
-            ReflexHooks::setDlssgFrameCount(options.mode == sl::DLSSGMode::eOff ? 0 : options.numFramesToGenerate);
+            auto& state = State::Instance();
+            const bool active = options.mode != sl::DLSSGMode::eOff && options.numFramesToGenerate > 0;
+            state.dlssgLastSetMode = options.mode;
+            state.dlssgOptionsGeneratedFrames.store(active ? static_cast<int>(options.numFramesToGenerate) : 0,
+                                                    std::memory_order_relaxed);
+            state.dlssgOptionsActive.store(active, std::memory_order_relaxed);
+            state.dlssgOptionsObserved.store(true, std::memory_order_release);
+            ReflexHooks::setDlssgFrameCount(active ? options.numFramesToGenerate : 0);
             // UI intent stays pending: unknown ABI was passed through unchanged.
         }
         if (result != sl::Result::eOk)
@@ -1381,9 +1387,13 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 #endif
         if (result == sl::Result::eOk)
         {
+            const bool active = newOptions.mode != sl::DLSSGMode::eOff && newOptions.numFramesToGenerate > 0;
             state.dlssgLastSetMode = newOptions.mode;
-            ReflexHooks::setDlssgFrameCount(newOptions.mode == sl::DLSSGMode::eOff ? 0
-                                                                                   : newOptions.numFramesToGenerate);
+            state.dlssgOptionsGeneratedFrames.store(active ? static_cast<int>(newOptions.numFramesToGenerate) : 0,
+                                                    std::memory_order_relaxed);
+            state.dlssgOptionsActive.store(active, std::memory_order_relaxed);
+            state.dlssgOptionsObserved.store(true, std::memory_order_release);
+            ReflexHooks::setDlssgFrameCount(active ? newOptions.numFramesToGenerate : 0);
             // The runtime can accept native/safety options while individual UI
             // overrides remain unapplied. Acknowledge only a fully applied request.
             const bool requestedActive =

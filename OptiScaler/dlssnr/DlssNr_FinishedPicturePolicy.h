@@ -14,9 +14,19 @@ inline constexpr bool FreshDlssgOwnership(int generatedFrames,
     return generatedFrames > 0 && activeEvaluationEpoch == presentEpoch;
 }
 
+inline constexpr bool DlssgPresentationOwnership(bool optionsObserved,
+                                                 bool optionsActive,
+                                                 bool freshEvaluationOwnership)
+{
+    // Successful Streamline options are authoritative because MFG can produce
+    // several Presents from one real evaluation. Use the exact-epoch signal
+    // only for direct NGX paths that never submit Streamline options.
+    return optionsObserved ? optionsActive : freshEvaluationOwnership;
+}
+
 // Ordinary wrapped Present is not the pre-FG handoff. Internal active FG and
 // XeFG's app-facing picture have their own ordered call sites. Native/external
-// DLSS-G is suppressed here only from fresh successful evaluation evidence.
+// DLSS-G is suppressed here only while runtime presentation ownership is active.
 inline constexpr bool AllowWrappedPicture(bool hasQueue, bool xeFgGamePicture,
                                           bool fgExists, bool fgActive,
                                           bool fgPaused, bool freshDlssgOwnership)
