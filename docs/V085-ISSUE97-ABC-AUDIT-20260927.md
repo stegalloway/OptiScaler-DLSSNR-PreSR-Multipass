@@ -169,3 +169,15 @@ opportunity retries the old detach before installing the replacement hook.
 Regression coverage in `tests/dlssg_hook_lifecycle.cpp` includes same-base/different-generation discard,
 same-generation intact-patch detach, PE-identity mismatch before target-byte read, unmapped target with no byte
 read, atomic stale generation, and genuine detach failure followed by successful retry.
+
+### INFO-level hook retirement evidence
+
+The generation-safe hook path now emits one INFO line for every retirement decision, so a normal release log can
+prove what happened without DEBUG logging:
+
+- `DLSSG hook generation N retired: stale-discarded (reason=...)`
+- `DLSSG hook generation N retired: detached`
+- `DLSSG hook generation N retired: blocked (reason=...); hook retained for retry`
+
+The blocked line is emitted once per generation. A genuine Detours error remains an ERROR as well; the INFO line
+makes the retirement state machine visible without hiding the failure.

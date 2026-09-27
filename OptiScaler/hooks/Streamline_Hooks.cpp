@@ -2756,6 +2756,14 @@ bool StreamlineHooks::detachDlssgHookLocked(const DlssgHookLifecycle::ModuleIden
     // Keep the live record visible and block replacement hooking instead.
     if (dlssgHookRecord.patchSize == 0)
     {
+        const auto generation = dlssgHookRecord.identity.generation;
+        if (dlssgRetirementBlockedLoggedGeneration != generation)
+        {
+            dlssgRetirementBlockedLoggedGeneration = generation;
+            LOG_INFO(
+                "DLSSG hook generation {} retired: blocked (reason=patch-bytes-unavailable); hook retained for retry",
+                generation);
+        }
         LOG_ERROR("DLSSG hook cannot be safely detached: installed patch bytes were not captured");
         return false;
     }
@@ -2765,8 +2773,9 @@ bool StreamlineHooks::detachDlssgHookLocked(const DlssgHookLifecycle::ModuleIden
 
     if (decision != DlssgHookLifecycle::DetachDecision::Detach)
     {
-        LOG_DEBUG("DLSSG hook record discarded without DetourDetach: generation={} reason={}",
-                  dlssgHookRecord.identity.generation, DlssgHookLifecycle::DecisionName(decision));
+        const auto generation = dlssgHookRecord.identity.generation;
+        LOG_INFO("DLSSG hook generation {} retired: stale-discarded (reason={})", generation,
+                 DlssgHookLifecycle::DecisionName(decision));
         clearDlssgHookRecordLocked();
         return true;
     }
@@ -2784,10 +2793,21 @@ bool StreamlineHooks::detachDlssgHookLocked(const DlssgHookLifecycle::ModuleIden
         // The module stayed pinned through commit, so this is a genuine live-hook
         // failure. Keep all bookkeeping intact so the next plugin-load opportunity
         // can retry rather than silently overwriting the only trampoline slot.
-        LOG_ERROR("Failed to unhook DLSSG generation {}: {:X}", dlssgHookRecord.identity.generation, detourResult);
+        const auto generation = dlssgHookRecord.identity.generation;
+        if (dlssgRetirementBlockedLoggedGeneration != generation)
+        {
+            dlssgRetirementBlockedLoggedGeneration = generation;
+            LOG_INFO(
+                "DLSSG hook generation {} retired: blocked (reason=DetourDetach error=0x{:X}); hook retained for retry",
+                generation, detourResult);
+        }
+        LOG_ERROR("Failed to unhook DLSSG generation {}: {:X}", generation, detourResult);
         return false;
     }
 
+    const auto generation = dlssgHookRecord.identity.generation;
+    LOG_INFO("DLSSG hook generation {} retired: detached", generation);
+    dlssgRetirementBlockedLoggedGeneration = 0;
     DlssgHookLifecycle::ApplyDetachResult(dlssgHookRecord, true);
     clearDlssgHookRecordLocked();
     return true;

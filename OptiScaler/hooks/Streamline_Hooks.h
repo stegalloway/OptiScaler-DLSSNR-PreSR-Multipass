@@ -281,6 +281,7 @@ class StreamlineHooks
     inline static std::atomic_uintptr_t dlssgHookModule { 0 };
     inline static std::atomic_uint64_t dlssgLocalGenerationCounter { 0 };
     inline static uint64_t dlssgBlockedGenerationLogged = 0;
+    inline static uint64_t dlssgRetirementBlockedLoggedGeneration = 0;
     static inline DlssgOptionsState dlssgOptionsState {};
     static inline std::atomic_bool gameDlssgOptionsObserved { false };
     static inline std::atomic_bool dlssgFeatureStateObserved { false };
