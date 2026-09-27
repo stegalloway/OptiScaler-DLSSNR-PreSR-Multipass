@@ -1,14 +1,40 @@
 name: clang-format Check
 on: [push, pull_request]
+
 jobs:
   formatting-check:
     name: Formatting Check
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Run clang-format style check for C/C++/Protobuf programs.
-      uses: jidicula/clang-format-action@v4.15.0
-      with:
-        clang-format-version: '20'
-        check-path: 'OptiScaler'
-        exclude-regex: 'external/|OptiScaler/include/'
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine changed range
+        id: range
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            head="$GITHUB_SHA"
+            before="${{ github.event.before }}"
+            if [[ -n "$before" && "$before" != "0000000000000000000000000000000000000000" ]] &&
+               git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              base="$before"
+            elif git rev-parse "${head}^" >/dev/null 2>&1; then
+              base="$(git rev-parse "${head}^")"
+            else
+              base="$head"
+            fi
+          fi
+          echo "clang-format range: $base..$head"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+      - name: Check clang-format 20 on changed lines
+        shell: bash
+        run: |
+          python3 .github/scripts/clang_format_diff.py             "${{ steps.range.outputs.base }}"             "${{ steps.range.outputs.head }}"
