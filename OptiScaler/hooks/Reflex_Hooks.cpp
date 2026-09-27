@@ -25,6 +25,12 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_
 #ifdef LOG_REFLEX_CALLS
     LOG_FUNC();
 #endif
+    const uint32_t requestedIntervalUs = pSetSleepModeParams->minimumIntervalUs;
+    const bool requestedLowLatency = pSetSleepModeParams->bLowLatencyMode != 0;
+    const bool requestedBoost = pSetSleepModeParams->bLowLatencyBoost != 0;
+    const bool requestedMarkers = pSetSleepModeParams->bUseMarkersToOptimize != 0;
+    const bool requestedMinQueue = pSetSleepModeParams->bUseMinQueueTime != 0;
+
     // Store for later so we can adjust the fps whenever we want
     memcpy(&_lastSleepParams, pSetSleepModeParams, sizeof(NV_SET_SLEEP_MODE_PARAMS));
     _lastSleepDev = pDev;
@@ -35,10 +41,44 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_
     if (_minimumIntervalUs != 0)
         pSetSleepModeParams->minimumIntervalUs = _minimumIntervalUs;
 
+    const uint32_t effectiveIntervalUs = pSetSleepModeParams->minimumIntervalUs;
+    NvAPI_Status result;
     if (State::Instance().activeFgOutput == FGOutput::XeFG)
-        return nvapi_calls::NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams);
+        result = nvapi_calls::NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams);
+    else
+        result = o_NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams);
 
-    return o_NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams);
+    static std::mutex sleepModeTraceMutex;
+    static bool haveLast = false;
+    static uint32_t lastRequested = 0;
+    static uint32_t lastEffective = 0;
+    static bool lastLowLatency = false;
+    static bool lastBoost = false;
+    static bool lastMarkers = false;
+    static bool lastMinQueue = false;
+    {
+        std::lock_guard<std::mutex> lock(sleepModeTraceMutex);
+        if (!haveLast || lastRequested != requestedIntervalUs || lastEffective != effectiveIntervalUs ||
+            lastLowLatency != requestedLowLatency || lastBoost != requestedBoost ||
+            lastMarkers != requestedMarkers || lastMinQueue != requestedMinQueue)
+        {
+            LOG_INFO("[SLEEPTRACE] kind=set_mode requested_us={} effective_us={} opti_override_us={} "
+                     "low_latency={} boost={} markers={} min_queue={} fg_count={} fg_output={} result={} tid={}",
+                     requestedIntervalUs, effectiveIntervalUs, _minimumIntervalUs, requestedLowLatency,
+                     requestedBoost, requestedMarkers, requestedMinQueue, _FgNumFramesToGenerate,
+                     magic_enum::enum_name(State::Instance().activeFgOutput), magic_enum::enum_name(result),
+                     GetCurrentThreadId());
+            haveLast = true;
+            lastRequested = requestedIntervalUs;
+            lastEffective = effectiveIntervalUs;
+            lastLowLatency = requestedLowLatency;
+            lastBoost = requestedBoost;
+            lastMarkers = requestedMarkers;
+            lastMinQueue = requestedMinQueue;
+        }
+    }
+
+    return result;
 }
 
 NvAPI_Status ReflexHooks::hkNvAPI_D3D_Sleep(IUnknown* pDev)
@@ -85,7 +125,42 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_Sleep(IUnknown* pDev)
         return nvapi_calls::NvAPI_D3D_Sleep(pDev);
 
     _lastSleepDev = pDev;
-    return o_NvAPI_D3D_Sleep(pDev);
+
+    const auto sleepStart = std::chrono::steady_clock::now();
+    const auto result = o_NvAPI_D3D_Sleep(pDev);
+    const double sleepMs = std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - sleepStart)
+                               .count();
+
+    struct SleepTraceWindow
+    {
+        std::chrono::steady_clock::time_point started {};
+        double sumMs = 0.0;
+        double maxMs = 0.0;
+        uint64_t calls = 0;
+    };
+    thread_local SleepTraceWindow window {};
+    if (window.calls == 0)
+        window.started = sleepStart;
+
+    window.sumMs += sleepMs;
+    window.maxMs = std::max(window.maxMs, sleepMs);
+    ++window.calls;
+
+    const double elapsedMs = std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - window.started)
+                                 .count();
+    if (elapsedMs >= 5000.0)
+    {
+        LOG_INFO("[SLEEPTRACE] kind=sleep_window calls={} mean_ms={:.3f} max_ms={:.3f} "
+                 "requested_us={} opti_override_us={} fg_count={} fg_output={} tid={}",
+                 window.calls, window.sumMs / static_cast<double>(window.calls), window.maxMs,
+                 _lastSleepParams.minimumIntervalUs, _minimumIntervalUs, _FgNumFramesToGenerate,
+                 magic_enum::enum_name(State::Instance().activeFgOutput), GetCurrentThreadId());
+        window = {};
+    }
+
+    return result;
 }
 
 NvAPI_Status ReflexHooks::hkNvAPI_D3D_GetLatency(IUnknown* pDev, NV_LATENCY_RESULT_PARAMS* pGetLatencyParams)

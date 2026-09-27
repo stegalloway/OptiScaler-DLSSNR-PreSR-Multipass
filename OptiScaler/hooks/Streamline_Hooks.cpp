@@ -1698,6 +1698,33 @@ sl::Result StreamlineHooks::hkslReflexSetOptions(const sl::ReflexOptions& option
     if (Config::Instance()->FN_ForceReflex == ForceReflex::ForceEnable)
         newOptions.mode = sl::ReflexMode::eLowLatencyWithBoost;
 
+    static std::mutex reflexTraceMutex;
+    static bool haveLast = false;
+    static sl::ReflexMode lastRequestedMode = sl::ReflexMode::eOff;
+    static sl::ReflexMode lastForwardedMode = sl::ReflexMode::eOff;
+    static uint32_t lastRequestedLimitUs = 0;
+    static uint32_t lastForwardedLimitUs = 0;
+    static bool lastMarkers = false;
+    {
+        std::lock_guard<std::mutex> lock(reflexTraceMutex);
+        if (!haveLast || lastRequestedMode != options.mode || lastForwardedMode != newOptions.mode ||
+            lastRequestedLimitUs != options.frameLimitUs || lastForwardedLimitUs != newOptions.frameLimitUs ||
+            lastMarkers != options.useMarkersToOptimize)
+        {
+            LOG_INFO("[SLEEPTRACE] kind=sl_set_options requested_mode={} forwarded_mode={} "
+                     "requested_limit_us={} forwarded_limit_us={} markers={} dlssg={} tid={}",
+                     magic_enum::enum_name(options.mode), magic_enum::enum_name(newOptions.mode),
+                     options.frameLimitUs, newOptions.frameLimitUs, options.useMarkersToOptimize,
+                     dlssgFeatureStateLabel(), GetCurrentThreadId());
+            haveLast = true;
+            lastRequestedMode = options.mode;
+            lastForwardedMode = newOptions.mode;
+            lastRequestedLimitUs = options.frameLimitUs;
+            lastForwardedLimitUs = newOptions.frameLimitUs;
+            lastMarkers = options.useMarkersToOptimize;
+        }
+    }
+
     // Will cause a pink screen when used with DLSSG
     // if (Config::Instance()->FN_ForceReflex == 1)
     //     newOptions.mode = sl::ReflexMode::eOff;
@@ -1713,7 +1740,38 @@ sl::Result StreamlineHooks::hkslReflexSleep(const sl::FrameToken& frame)
     //     return StreamlineProxy::ReflexSleep()(frame);
     // }
 
-    return o_slReflexSleep(frame);
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = o_slReflexSleep(frame);
+    const auto ended = std::chrono::steady_clock::now();
+    const double sleepMs = std::chrono::duration<double, std::milli>(ended - started).count();
+
+    struct ReflexSleepTraceWindow
+    {
+        std::chrono::steady_clock::time_point started {};
+        double sumMs = 0.0;
+        double maxMs = 0.0;
+        uint64_t calls = 0;
+    };
+    thread_local ReflexSleepTraceWindow window {};
+    if (window.calls == 0)
+        window.started = started;
+
+    window.sumMs += sleepMs;
+    window.maxMs = std::max(window.maxMs, sleepMs);
+    ++window.calls;
+
+    const double elapsedMs =
+        std::chrono::duration<double, std::milli>(ended - window.started).count();
+    if (elapsedMs >= 5000.0)
+    {
+        LOG_INFO("[SLEEPTRACE] kind=sl_sleep_window calls={} mean_ms={:.3f} max_ms={:.3f} "
+                 "window_ms={:.1f} dlssg={} tid={}",
+                 window.calls, window.sumMs / static_cast<double>(window.calls), window.maxMs,
+                 elapsedMs, dlssgFeatureStateLabel(), GetCurrentThreadId());
+        window = {};
+    }
+
+    return result;
 }
 
 void* StreamlineHooks::hkdlss_slGetPluginFunction(const char* functionName)
