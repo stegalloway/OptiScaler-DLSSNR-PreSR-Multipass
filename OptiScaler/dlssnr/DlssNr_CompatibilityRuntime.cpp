@@ -144,7 +144,13 @@ std::shared_ptr<CompatibilityRuntime> CompatibilityRuntime::Open(const std::file
         auto path = std::filesystem::absolute(candidate).lexically_normal();
         auto loaded = liveModule.lock();
         if (!loaded) moduleRetired.wait(lock, [&] { loaded = liveModule.lock(); return loaded || !moduleRegistered; });
-        if (loaded && !std::filesystem::equivalent(loaded->path, path)) return {};
+        if (loaded)
+        {
+            std::error_code equivalentError;
+            const bool samePath = std::filesystem::equivalent(loaded->path, path, equivalentError);
+            if (equivalentError || !samePath)
+                return {};
+        }
         for (auto it = devices.begin(); it != devices.end();)
             if (it->second.expired()) it = devices.erase(it); else ++it;
         if (auto it = devices.find(device); it != devices.end())

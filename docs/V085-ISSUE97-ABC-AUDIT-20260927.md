@@ -181,3 +181,16 @@ prove what happened without DEBUG logging:
 
 The blocked line is emitted once per generation. A genuine Detours error remains an ERROR as well; the INFO line
 makes the retirement state machine visible without hiding the failure.
+
+
+## Superseded ownership side-branch experiments
+
+The ownership experiments on the magnitude-playable side branch are historical only:
+
+- `0cb0375e` - `Release DLSSG ownership from runtime presentation state`
+- `48ec012e` - `Release DLSSG ownership from plugin interpolation state`
+- `b3d5cce9` - `Bound DLSSG ownership to evaluation present window`
+
+None of those commits is an ancestor of the promoted ownership branch. Their intended ownership work is superseded
+by `6cb294ff` (`Use Streamline feature state for DLSSG ownership`), which is an ancestor of the current branch and
+is the canonical implementation carried forward.
