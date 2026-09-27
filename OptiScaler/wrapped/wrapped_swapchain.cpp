@@ -9,6 +9,7 @@
 
 #include <nvapi/fakenvapi.h>
 #include <hooks/Reflex_Hooks.h>
+#include <hooks/Streamline_Hooks.h>
 #include <hooks/D3D12_Hooks.h>
 #include <with_dx12/dx11_with_dx12_sync.h>
 
@@ -596,23 +597,28 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         const bool optionsActive = fgState.dlssgOptionsActive.load(std::memory_order_relaxed);
         const int optionsGeneratedFrames =
             fgState.dlssgOptionsGeneratedFrames.load(std::memory_order_relaxed);
+        const bool featureStateObserved = StreamlineHooks::hasDlssgFeatureState();
+        const bool featureEnabled = StreamlineHooks::isDlssgFeatureEnabled();
         const bool dlssgPresentationOwnership = DlssNr::FinishedPicturePolicy::DlssgPresentationOwnership(
-            optionsObserved, optionsActive, fallbackFreshEvaluationOwnership);
+            optionsObserved, optionsActive, featureStateObserved, featureEnabled,
+            fallbackFreshEvaluationOwnership);
         const bool allowWrappedPicture = DlssNr::FinishedPicturePolicy::AllowWrappedPicture(
             cq != nullptr, xeFgGamePicture, fg != nullptr,
             fg != nullptr && fg->IsActive(), fg != nullptr && fg->IsPaused(), dlssgPresentationOwnership);
 
-        // Transition-only diagnostic. Successful Streamline options remain
-        // authoritative across every generated Present in MFG; the exact
-        // evaluation epoch is only a fallback for direct NGX ownership.
+        // Transition-only diagnostic. Feature load/unload is authoritative once
+        // Streamline reports it; options seed state before that, and direct NGX
+        // retains the exact-evaluation fallback.
         static std::atomic<int> lastDlssgOwnership { -1 };
         const int ownershipState = dlssgPresentationOwnership ? 1 : 0;
         if (lastDlssgOwnership.exchange(ownershipState, std::memory_order_relaxed) != ownershipState)
         {
-            LOG_INFO("DLSS-NR ownership transition: dlssg={} source={} wrapped_finished={} options_generated={} "
-                     "eval_generated={} eval_epoch={} present_epoch={}",
-                     dlssgPresentationOwnership, optionsObserved ? "streamline_options" : "evaluation_fallback",
-                     allowWrappedPicture, optionsGeneratedFrames, fgState.dlssgDetectedInterpolationCount,
+            const char* ownershipSource = featureStateObserved ? "feature_state"
+                                         : (optionsObserved ? "streamline_options" : "evaluation_fallback");
+            LOG_INFO("DLSS-NR ownership transition: dlssg={} source={} wrapped_finished={} feature_enabled={} "
+                     "options_generated={} eval_generated={} eval_epoch={} present_epoch={}",
+                     dlssgPresentationOwnership, ownershipSource, allowWrappedPicture, featureEnabled,
+                     optionsGeneratedFrames, fgState.dlssgDetectedInterpolationCount,
                      fgState.dlssgLastActiveEvaluationFrame, fgState.frameCount);
         }
 

@@ -148,6 +148,8 @@ class StreamlineHooks
     static DlssgOptionsState::Snapshot getDlssgOverrides() { initializeDlssgOptions(); return dlssgOptionsState.Read(); }
     static void acceptDlssgOverrides(uint64_t generation) { dlssgOptionsState.Accepted(generation); }
     static bool hasGameDlssgOptions() { return gameDlssgOptionsObserved.load(std::memory_order_acquire); }
+    static bool hasDlssgFeatureState() { return dlssgFeatureStateObserved.load(std::memory_order_acquire); }
+    static bool isDlssgFeatureEnabled() { return dlssgFeatureEnabled.load(std::memory_order_relaxed); }
     static MfgHdrUiDiagnostics::Snapshot getMfgHdrUiDiagnostics();
     static void applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool potentiallyActive);
 
@@ -268,7 +270,10 @@ class StreamlineHooks
     inline static decltype(&slDLSSGGetState) o_slDLSSGGetState = nullptr;
     static inline DlssgOptionsState dlssgOptionsState {};
     static inline std::atomic_bool gameDlssgOptionsObserved { false };
+    static inline std::atomic_bool dlssgFeatureStateObserved { false };
+    static inline std::atomic_bool dlssgFeatureEnabled { false };
 
+    static void observeDlssgFeatureStateMessage(const char* msg);
     static bool hkdlssg_slOnPluginLoad(sl::param::IParameters* params, const char* loaderJSON, const char** pluginJSON);
     static sl::Result hkslSetConstants(const sl::Constants& values, const sl::FrameToken& frame,
                                        const sl::ViewportHandle& viewport);

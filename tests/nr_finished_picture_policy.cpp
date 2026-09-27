@@ -8,17 +8,39 @@ using namespace DlssNr::FinishedPicturePolicy;
 
 int main()
 {
-    // Fresh successful DLSS-G evaluation owns this real frame.
+    // Direct-NGX fallback: only a fresh successful active evaluation owns.
     assert(FreshDlssgOwnership(1, 42, 42));
     assert(FreshDlssgOwnership(5, 42, 42));
     assert(!FreshDlssgOwnership(0, 42, 42));
-
-    // Cached counts expire at the next wrapped Present epoch.
     assert(!FreshDlssgOwnership(5, 41, 42));
     assert(!FreshDlssgOwnership(5, uint64_t(-1), 42));
 
+    // Before Streamline feature-state evidence exists, successful options own.
+    assert(DlssgPresentationOwnership(true, true, false, false, false));
+
+    // Feature loaded is authoritative across internal interpolation pauses.
+    assert(DlssgPresentationOwnership(true, true, true, true, false));
+
+    // Miles keeps SetOptions eOn when the actual DLSS-G feature is unloaded.
+    // Feature unload must therefore release ownership despite stale options/eval.
+    assert(!DlssgPresentationOwnership(true, true, true, false, true));
+
+    // Feature state can also establish ownership before any SetOptions call.
+    assert(DlssgPresentationOwnership(false, false, true, true, false));
+    assert(!DlssgPresentationOwnership(false, false, true, false, true));
+
+    // A real successful SetOptions Off remains an immediate release.
+    assert(!DlssgPresentationOwnership(true, false, true, true, true));
+
+    // If no Streamline evidence exists, direct-NGX evaluation is the fallback.
+    assert(DlssgPresentationOwnership(false, false, false, false, true));
+    assert(!DlssgPresentationOwnership(false, false, false, false, false));
+
     // Normal non-FG path remains eligible.
     assert(AllowWrappedPicture(true, false, false, false, false, false));
+
+    // External/native DLSS-G ownership suppresses ordinary wrapped finished picture.
+    assert(!AllowWrappedPicture(true, false, false, false, false, true));
 
     // Internal active FG and XeFG app-picture routing remain separate.
     assert(!AllowWrappedPicture(true, false, true, true, false, false));
@@ -28,30 +50,12 @@ int main()
     assert(AllowWrappedPicture(true, false, true, false, false, false));
     assert(AllowWrappedPicture(true, false, true, true, true, false));
 
-    // Native/external DLSS-G needs no OptiScaler FG object. Before Streamline
-    // options have been observed, the fresh evaluation epoch is the fallback.
-    assert(DlssgPresentationOwnership(false, false, true));
-    assert(!DlssgPresentationOwnership(false, false, false));
-
-    // Once successful Streamline options exist they are authoritative across
-    // all generated Presents. Active options outlive one evaluation epoch.
-    assert(DlssgPresentationOwnership(true, true, false));
-
-    // A successful FG-off options call immediately releases ownership even if
-    // the last evaluation epoch/count is still cached.
-    assert(!DlssgPresentationOwnership(true, false, true));
-
-    assert(!AllowWrappedPicture(true, false, false, false, false,
-                                DlssgPresentationOwnership(true, true, false)));
-    assert(AllowWrappedPicture(true, false, false, false, false,
-                               DlssgPresentationOwnership(true, false, true)));
-
-    // Cancellation is deliberately independent from FG ownership.
+    // Cancellation remains deliberately independent from presentation ownership.
     assert(!CancelPending(true, true));
     assert(CancelPending(false, true));
     assert(CancelPending(true, false));
     assert(CancelPending(false, false));
 
-    std::puts("PASS: finished-picture options ownership, fallback freshness and cancellation separation");
+    std::puts("PASS: DLSSG feature-state ownership, options/direct fallback and cancellation separation");
     return 0;
 }

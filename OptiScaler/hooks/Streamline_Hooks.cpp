@@ -154,11 +154,44 @@ char* StreamlineHooks::trimStreamlineLog(const char* msg)
     return result;
 }
 
+void StreamlineHooks::observeDlssgFeatureStateMessage(const char* msg)
+{
+    if (msg == nullptr)
+        return;
+
+    constexpr const char* featureLoaded = "Feature 'kFeatureDLSS_G' loaded";
+    constexpr const char* featureUnloaded = "Feature 'kFeatureDLSS_G' unloaded";
+
+    bool matched = false;
+    bool enabled = false;
+    if (strstr(msg, featureLoaded) != nullptr)
+    {
+        matched = true;
+        enabled = true;
+    }
+    else if (strstr(msg, featureUnloaded) != nullptr)
+    {
+        matched = true;
+        enabled = false;
+    }
+
+    if (!matched)
+        return;
+
+    const bool wasObserved = dlssgFeatureStateObserved.load(std::memory_order_acquire);
+    const bool wasEnabled = dlssgFeatureEnabled.exchange(enabled, std::memory_order_relaxed);
+    dlssgFeatureStateObserved.store(true, std::memory_order_release);
+
+    if (!wasObserved || wasEnabled != enabled)
+        LOG_INFO("DLSS-G feature state: enabled={}", enabled);
+}
+
 void StreamlineHooks::streamlineLogCallback(sl::LogType type, const char* msg)
 {
     if (msg == nullptr || State::Instance().isShuttingDown)
         return;
 
+    observeDlssgFeatureStateMessage(msg);
     char* trimmed_msg = trimStreamlineLog(msg);
     if (trimmed_msg != nullptr)
     {
@@ -789,6 +822,7 @@ void StreamlineHooks::streamlineLogCallback_sl1(sl1::LogType type, const char* m
     if (msg == nullptr || State::Instance().isShuttingDown)
         return;
 
+    observeDlssgFeatureStateMessage(msg);
     char* trimmed_msg = trimStreamlineLog(msg);
 
     if (trimmed_msg != nullptr)

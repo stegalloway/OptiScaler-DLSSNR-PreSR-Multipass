@@ -16,11 +16,22 @@ inline constexpr bool FreshDlssgOwnership(int generatedFrames,
 
 inline constexpr bool DlssgPresentationOwnership(bool optionsObserved,
                                                  bool optionsActive,
+                                                 bool featureStateObserved,
+                                                 bool featureEnabled,
                                                  bool freshEvaluationOwnership)
 {
-    // Successful Streamline options are authoritative because MFG can produce
-    // several Presents from one real evaluation. Use the exact-epoch signal
-    // only for direct NGX paths that never submit Streamline options.
+    // An explicit successful Off request always releases ownership.
+    if (optionsObserved && !optionsActive)
+        return false;
+
+    // Streamline's feature load/unload state tracks Miles' actual FG toggle.
+    // It is stable across internal interpolation pause/resume cycles and can
+    // override a stale eOn SetOptions request when the feature is unloaded.
+    if (featureStateObserved)
+        return featureEnabled;
+
+    // Before feature state is reported, successful options are authoritative
+    // for Streamline games; direct-NGX paths retain the evaluation fallback.
     return optionsObserved ? optionsActive : freshEvaluationOwnership;
 }
 
