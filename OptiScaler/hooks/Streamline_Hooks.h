@@ -150,10 +150,6 @@ class StreamlineHooks
     static bool hasGameDlssgOptions() { return gameDlssgOptionsObserved.load(std::memory_order_acquire); }
     static bool hasDlssgFeatureState() { return dlssgFeatureStateObserved.load(std::memory_order_acquire); }
     static bool isDlssgFeatureEnabled() { return dlssgFeatureEnabled.load(std::memory_order_relaxed); }
-    static bool consumeDlssgLatencyResetPending()
-    {
-        return dlssgLatencyResetPending.exchange(false, std::memory_order_acq_rel);
-    }
     static MfgHdrUiDiagnostics::Snapshot getMfgHdrUiDiagnostics();
     static void applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool potentiallyActive);
 
@@ -276,7 +272,6 @@ class StreamlineHooks
     static inline std::atomic_bool gameDlssgOptionsObserved { false };
     static inline std::atomic_bool dlssgFeatureStateObserved { false };
     static inline std::atomic_bool dlssgFeatureEnabled { false };
-    static inline std::atomic_bool dlssgLatencyResetPending { false };
 
     static void observeDlssgFeatureStateMessage(const char* msg);
     static bool hkdlssg_slOnPluginLoad(sl::param::IParameters* params, const char* loaderJSON, const char** pluginJSON);
