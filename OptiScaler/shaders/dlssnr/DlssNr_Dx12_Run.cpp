@@ -945,11 +945,11 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         // motion encoding, not to one DLSS quality-mode feature instance.
         // Keep it for this process so Quality/Balanced/Performance feature
         // recreation does not need another startup readback test.
-        static constexpr uint32_t kNrStabMvValid = 1u << 0;
-        static constexpr uint32_t kNrStabMvDirectionMinus = 1u << 1;
-        static constexpr uint32_t kNrStabMvScaleXMinus = 1u << 2;
-        static constexpr uint32_t kNrStabMvScaleYMinus = 1u << 3;
-        static constexpr uint32_t kNrStabMvConflict = 1u << 31;
+        static constexpr uint8_t kNrStabMvValid = 1u << 0;
+        static constexpr uint8_t kNrStabMvDirectionMinus = 1u << 1;
+        static constexpr uint8_t kNrStabMvScaleXMinus = 1u << 2;
+        static constexpr uint8_t kNrStabMvScaleYMinus = 1u << 3;
+        static constexpr uint8_t kNrStabMvConflict = 1u << 4;
 
         // One coherent process-session convention word.
         //
@@ -957,11 +957,11 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         // independently validated NR instances disagreed. A conflicted cache
         // is never inherited and is never cleared by a later successful
         // validation; every subsequent instance runs its own startup test.
-        static std::atomic<uint32_t> nrStabSessionMvConvention { 0u };
+        static std::atomic<uint8_t> nrStabSessionMvConvention { 0u };
 
-        const auto PackNrStabMvConvention = [&](float stabilizerSign) -> uint32_t
+        const auto PackNrStabMvConvention = [&](float stabilizerSign) -> uint8_t
         {
-            uint32_t packed = kNrStabMvValid;
+            uint8_t packed = kNrStabMvValid;
 
             if (stabilizerSign < 0.0f)
                 packed |= kNrStabMvDirectionMinus;
@@ -975,16 +975,16 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
             return packed;
         };
 
-        const auto PublishNrStabMvConvention = [&](uint32_t candidate)
+        const auto PublishNrStabMvConvention = [&](uint8_t candidate)
         {
-            const uint32_t current = nrStabSessionMvConvention.load(std::memory_order_acquire);
+            const uint8_t current = nrStabSessionMvConvention.load(std::memory_order_acquire);
 
             // Load before CAS so an already-conflicted cache is distinct from
             // an ordinary CAS failure against another valid convention.
             if ((current & kNrStabMvConflict) != 0u)
                 return;
 
-            uint32_t expected = 0u;
+            uint8_t expected = 0u;
 
             if (nrStabSessionMvConvention.compare_exchange_strong(expected, candidate, std::memory_order_acq_rel,
                                                                   std::memory_order_acquire))
@@ -998,14 +998,14 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
             if ((expected & kNrStabMvConflict) != 0u)
                 return;
 
-            const uint32_t previous = nrStabSessionMvConvention.fetch_or(kNrStabMvConflict, std::memory_order_acq_rel);
+            const uint8_t previous = nrStabSessionMvConvention.fetch_or(kNrStabMvConflict, std::memory_order_acq_rel);
 
             if ((previous & kNrStabMvConflict) == 0u)
             {
                 LOG_ERROR("[NRSTAB] MV SESSION CACHE CONFLICT "
-                          "existing=0x{:08X} candidate=0x{:08X}; "
+                          "existing=0x{:02X} candidate=0x{:02X}; "
                           "cache inheritance disabled for remainder of process",
-                          previous, candidate);
+                          static_cast<unsigned>(previous), static_cast<unsigned>(candidate));
             }
         };
 
@@ -1383,7 +1383,7 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         const bool nrStabResourcesReady = nrStabEligible ? EnsureNrStabResources() : false;
         if (nrStabEligible && nrStabResourcesReady && !nr.stabMvSelfTestPassed && !nr.stabMvSelfTestFailed)
         {
-            const uint32_t cachedConvention = nrStabSessionMvConvention.load(std::memory_order_acquire);
+            const uint8_t cachedConvention = nrStabSessionMvConvention.load(std::memory_order_acquire);
 
             const bool cacheConflicted = (cachedConvention & kNrStabMvConflict) != 0u;
 
@@ -1393,9 +1393,9 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
             {
                 nr.stabSessionCacheConflictLogged = true;
                 LOG_WARN("[NRSTAB] MV SESSION CACHE CONFLICT ACTIVE "
-                         "cache=0x{:08X}; inheritance_disabled=1 "
+                         "cache=0x{:02X}; inheritance_disabled=1 "
                          "startup_selftest_required=1",
-                         cachedConvention);
+                         static_cast<unsigned>(cachedConvention));
             }
             else if (cacheValid)
             {
