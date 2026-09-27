@@ -6,7 +6,6 @@
 #include <framegen/ffx/FSRFG_Dx12.h>
 #include <framegen/xefg/XeFG_Dx12.h>
 #include <framegen/dlssg/DLSSG_Dx12.h>
-#include <framegen/dlssg/MfgUnlock.h>
 
 #include <inputs/FG/FSR3_Dx12_FG.h>
 #include <inputs/FG/FfxApi_Dx12_FG.h>
@@ -18,54 +17,12 @@
 
 #include <misc/IdentifyGpu.h>
 #include <hooks/Reflex_Hooks.h>
-#include <hooks/Streamline_Hooks.h>
 #include <menu/menu_overlay_dx.h>
-
-#include <magic_enum.hpp>
 
 #include <d3d12.h>
 #include <detours/detours.h>
 
 #define XEFG_RESOURCE_REF_LIMIT 1
-
-struct FgTraceTelemetry
-{
-    bool available = false;
-    bool optionsSeen = false;
-    bool active = false;
-    unsigned int requested = 0;
-    unsigned int sent = 0;
-    bool stateSeen = false;
-    unsigned int presented = 0;
-};
-
-static FgTraceTelemetry GetFgTraceTelemetry()
-{
-#if defined(OPTISCALER_RTX40_MFG)
-    const auto& telemetry = MfgUnlock::GetTelemetry();
-    return {
-        true,
-        telemetry.optionsSeen.load(std::memory_order_relaxed),
-        telemetry.active.load(std::memory_order_relaxed),
-        telemetry.requested.load(std::memory_order_relaxed),
-        telemetry.sent.load(std::memory_order_relaxed),
-        telemetry.stateSeen.load(std::memory_order_relaxed),
-        telemetry.presented.load(std::memory_order_relaxed),
-    };
-#else
-    return {};
-#endif
-}
-
-static const char* FgTraceBool(bool available, bool value)
-{
-    return !available ? "n/a" : (value ? "1" : "0");
-}
-
-static std::string FgTraceUInt(bool available, unsigned int value)
-{
-    return available ? std::to_string(value) : std::string("n/a");
-}
 
 static ID3D12Fence* resizeFence = nullptr;
 static UINT64 resizeFenceValue = 0;
@@ -171,40 +128,8 @@ static bool CheckForFGStatus()
 HRESULT FGHooks::CreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                  IDXGISwapChain** ppSwapChain)
 {
-    const auto inputBeforeCheck = State::Instance().activeFgInput;
-    const auto outputBeforeCheck = State::Instance().activeFgOutput;
-    const std::string caller = Util::WhoIsTheCaller(_ReturnAddress());
-    const bool fgStatusOk = CheckForFGStatus();
-    if (!fgStatusOk)
+    if (!CheckForFGStatus())
     {
-        const auto& state = State::Instance();
-        const auto telemetry = GetFgTraceTelemetry();
-        auto* traceFg = state.currentFG;
-        const bool localFgActive = traceFg != nullptr && traceFg->IsActive();
-        const bool localFgPaused = traceFg != nullptr && traceFg->IsPaused();
-        LOG_INFO("[FSTRACE] kind=fg_create_reject path=legacy input={} output_before={} output_after={} "
-                 "caller={} hwnd=0x{:X} windowed={} size={}x{} refresh={}/{} dlssg={} "
-                 "state_seen={} presented={} options_seen={} requested={} sent={} sl_active={} "
-                 "local_fg_active={} local_fg_paused={} current_fg=0x{:X} current_fg_sc=0x{:X} "
-                 "current_real_sc=0x{:X} tid={}",
-                 magic_enum::enum_name(inputBeforeCheck), magic_enum::enum_name(outputBeforeCheck),
-                 magic_enum::enum_name(state.activeFgOutput), caller,
-                 pDesc != nullptr ? reinterpret_cast<uintptr_t>(pDesc->OutputWindow) : 0,
-                 pDesc != nullptr ? static_cast<int>(pDesc->Windowed) : -1,
-                 pDesc != nullptr ? pDesc->BufferDesc.Width : 0,
-                 pDesc != nullptr ? pDesc->BufferDesc.Height : 0,
-                 pDesc != nullptr ? pDesc->BufferDesc.RefreshRate.Numerator : 0,
-                 pDesc != nullptr ? pDesc->BufferDesc.RefreshRate.Denominator : 0,
-                 StreamlineHooks::dlssgFeatureStateLabel(),
-                 FgTraceBool(telemetry.available, telemetry.stateSeen),
-                 FgTraceUInt(telemetry.available && telemetry.stateSeen, telemetry.presented),
-                 FgTraceBool(telemetry.available, telemetry.optionsSeen),
-                 FgTraceUInt(telemetry.available && telemetry.optionsSeen, telemetry.requested),
-                 FgTraceUInt(telemetry.available && telemetry.optionsSeen, telemetry.sent),
-                 FgTraceBool(telemetry.available && telemetry.optionsSeen, telemetry.active),
-                 localFgActive, localFgPaused, reinterpret_cast<uintptr_t>(traceFg),
-                 reinterpret_cast<uintptr_t>(state.currentFGSwapchain),
-                 reinterpret_cast<uintptr_t>(state.currentRealSwapchain), GetCurrentThreadId());
         LOG_WARN("Can't init FG Feature or invalid FGOutput setting!");
         return E_NOINTERFACE;
     }
@@ -309,40 +234,8 @@ HRESULT FGHooks::CreateSwapChainForHwnd(IDXGIFactory* pFactory, IUnknown* pDevic
                                         DXGI_SWAP_CHAIN_DESC1* pDesc, DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc,
                                         IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain)
 {
-    const auto inputBeforeCheck = State::Instance().activeFgInput;
-    const auto outputBeforeCheck = State::Instance().activeFgOutput;
-    const std::string caller = Util::WhoIsTheCaller(_ReturnAddress());
-    const bool fgStatusOk = CheckForFGStatus();
-    if (!fgStatusOk)
+    if (!CheckForFGStatus())
     {
-        const auto& state = State::Instance();
-        const auto telemetry = GetFgTraceTelemetry();
-        auto* traceFg = state.currentFG;
-        const bool localFgActive = traceFg != nullptr && traceFg->IsActive();
-        const bool localFgPaused = traceFg != nullptr && traceFg->IsPaused();
-        LOG_INFO("[FSTRACE] kind=fg_create_reject path=hwnd input={} output_before={} output_after={} caller={} "
-                 "hwnd=0x{:X} windowed={} fullscreen_desc={} size={}x{} refresh={}/{} restrict_output=0x{:X} "
-                 "dlssg={} state_seen={} presented={} options_seen={} requested={} sent={} sl_active={} "
-                 "local_fg_active={} local_fg_paused={} current_fg=0x{:X} current_fg_sc=0x{:X} "
-                 "current_real_sc=0x{:X} tid={}",
-                 magic_enum::enum_name(inputBeforeCheck), magic_enum::enum_name(outputBeforeCheck),
-                 magic_enum::enum_name(state.activeFgOutput), caller, reinterpret_cast<uintptr_t>(hWnd),
-                 pFullscreenDesc == nullptr ? 1 : static_cast<int>(pFullscreenDesc->Windowed),
-                 pFullscreenDesc != nullptr ? 1 : 0,
-                 pDesc != nullptr ? pDesc->Width : 0, pDesc != nullptr ? pDesc->Height : 0,
-                 pFullscreenDesc != nullptr ? pFullscreenDesc->RefreshRate.Numerator : 0,
-                 pFullscreenDesc != nullptr ? pFullscreenDesc->RefreshRate.Denominator : 0,
-                 reinterpret_cast<uintptr_t>(pRestrictToOutput),
-                 StreamlineHooks::dlssgFeatureStateLabel(),
-                 FgTraceBool(telemetry.available, telemetry.stateSeen),
-                 FgTraceUInt(telemetry.available && telemetry.stateSeen, telemetry.presented),
-                 FgTraceBool(telemetry.available, telemetry.optionsSeen),
-                 FgTraceUInt(telemetry.available && telemetry.optionsSeen, telemetry.requested),
-                 FgTraceUInt(telemetry.available && telemetry.optionsSeen, telemetry.sent),
-                 FgTraceBool(telemetry.available && telemetry.optionsSeen, telemetry.active),
-                 localFgActive, localFgPaused, reinterpret_cast<uintptr_t>(traceFg),
-                 reinterpret_cast<uintptr_t>(state.currentFGSwapchain),
-                 reinterpret_cast<uintptr_t>(state.currentRealSwapchain), GetCurrentThreadId());
         LOG_WARN("Can't init FG Feature or invalid FGOutput setting!");
         return E_NOINTERFACE;
     }

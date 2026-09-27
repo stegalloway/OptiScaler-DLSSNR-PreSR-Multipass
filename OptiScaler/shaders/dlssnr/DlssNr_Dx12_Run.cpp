@@ -507,18 +507,28 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     const float mvToWorkX = mvRefW != 0 ? (float) mvGuideW / (float) mvRefW : 1.0f;
     const float mvToWorkY = mvRefH != 0 ? (float) mvGuideH / (float) mvRefH : 1.0f;
     {
-        static unsigned int loggedRefW = 0, loggedGuideW = 0, loggedWorkW = 0;
+        static unsigned int loggedRefW = 0, loggedRefH = 0, loggedGuideW = 0, loggedWorkW = 0;
+        static unsigned int loggedSpatialW = 0, loggedSpatialH = 0;
+        static float loggedSpatialScaleX = 0.0f, loggedSpatialScaleY = 0.0f;
         static int loggedMode = -1;
         const int motionMode = spatial ? (renderMotionScale ? 3 : 2) : (renderMotionScale ? 1 : 0);
-        if (loggedRefW != mvRefW || loggedGuideW != mvGuideW || loggedWorkW != workWidth ||
-            loggedMode != motionMode)
+        const bool changed =
+            spatial ? (loggedRefW != mvRefW || loggedRefH != mvRefH || loggedSpatialW != width ||
+                       loggedSpatialH != height || loggedSpatialScaleX != spatialMvScaleX ||
+                       loggedSpatialScaleY != spatialMvScaleY || loggedMode != motionMode)
+                    : (loggedRefW != mvRefW || loggedRefH != mvRefH || loggedGuideW != mvGuideW ||
+                       loggedWorkW != workWidth || loggedMode != motionMode);
+        if (changed)
         {
             loggedRefW = mvRefW;
-            loggedGuideW = mvGuideW;
-            loggedWorkW = workWidth;
+            loggedRefH = mvRefH;
             loggedMode = motionMode;
             if (spatial)
             {
+                loggedSpatialW = width;
+                loggedSpatialH = height;
+                loggedSpatialScaleX = spatialMvScaleX;
+                loggedSpatialScaleY = spatialMvScaleY;
                 LOG_INFO("DLSS-NR model motion scale {:.1f} x {:.1f} before spatial packing: game scale {} x {} "
                          "measured against {}x{} ({}), converted to NR frame {}x{}; packed model scale 1.0 x 1.0",
                          spatialMvScaleX, spatialMvScaleY, frame.MvScaleX, frame.MvScaleY, mvRefW, mvRefH,
@@ -529,6 +539,8 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
             }
             else
             {
+                loggedGuideW = mvGuideW;
+                loggedWorkW = workWidth;
                 LOG_INFO("DLSS-NR model motion scale {:.1f} x {:.1f}: game scale {} x {} measured against {}x{} ({}), "
                          "motion texture {}x{} ({}), model {}x{}",
                          frame.MvScaleX * mvToWorkX, frame.MvScaleY * mvToWorkY, frame.MvScaleX, frame.MvScaleY,

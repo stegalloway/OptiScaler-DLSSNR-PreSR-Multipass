@@ -3425,14 +3425,16 @@ static void RenderDlssgTelemetry()
     if (!telemetry.optionsSeen.load(std::memory_order_acquire) || !telemetry.active.load(std::memory_order_relaxed))
         return;
 
+    const unsigned int requestedX = telemetry.requested.load(std::memory_order_relaxed) + 1;
+    const unsigned int sentX = telemetry.sent.load(std::memory_order_relaxed) + 1;
+
     if (!telemetry.stateSeen.load(std::memory_order_acquire))
     {
-        ImGui::TextDisabled("DLSSG: waiting for Streamline state...");
+        ImGui::TextDisabled("DLSSG: game asked %uX, sent %uX; no Streamline presentation-state sample.", requestedX,
+                            sentX);
         return;
     }
 
-    const unsigned int requestedX = telemetry.requested.load(std::memory_order_relaxed) + 1;
-    const unsigned int sentX = telemetry.sent.load(std::memory_order_relaxed) + 1;
     const unsigned int presented = telemetry.presented.load(std::memory_order_relaxed);
     const unsigned int result = telemetry.result.load(std::memory_order_relaxed);
 

@@ -30,6 +30,9 @@ DriverMarkerTraceWindow g_driverMarkerTrace;
 
 void ObserveDriverMarker(bool simulationStart, bool presentStart, bool asyncPresentStart)
 {
+    if (!Config::Instance()->FGDLSSGDiagnostics.value_or_default())
+        return;
+
     const uint64_t nowMs = GetTickCount64();
     std::lock_guard<std::mutex> lock(g_driverMarkerTrace.mutex);
     if (g_driverMarkerTrace.startMs == 0)
@@ -43,15 +46,15 @@ void ObserveDriverMarker(bool simulationStart, bool presentStart, bool asyncPres
         return;
 
     const uint64_t totalPresents = g_driverMarkerTrace.presentStarts + g_driverMarkerTrace.asyncPresentStarts;
-    const double syncRatio = g_driverMarkerTrace.simulationStarts != 0
+    const double syncRatio = g_driverMarkerTrace.simulationStarts
                                  ? static_cast<double>(g_driverMarkerTrace.presentStarts) /
                                        static_cast<double>(g_driverMarkerTrace.simulationStarts)
                                  : 0.0;
-    const double asyncRatio = g_driverMarkerTrace.simulationStarts != 0
+    const double asyncRatio = g_driverMarkerTrace.simulationStarts
                                   ? static_cast<double>(g_driverMarkerTrace.asyncPresentStarts) /
                                         static_cast<double>(g_driverMarkerTrace.simulationStarts)
                                   : 0.0;
-    const double totalRatio = g_driverMarkerTrace.simulationStarts != 0
+    const double totalRatio = g_driverMarkerTrace.simulationStarts
                                   ? static_cast<double>(totalPresents) /
                                         static_cast<double>(g_driverMarkerTrace.simulationStarts)
                                   : 0.0;
@@ -59,8 +62,8 @@ void ObserveDriverMarker(bool simulationStart, bool presentStart, bool asyncPres
              "async_present_start={} total_present={} sync_present_per_sim={:.3f} "
              "async_present_per_sim={:.3f} total_present_per_sim={:.3f} fg_count={} fg_output={}",
              nowMs - g_driverMarkerTrace.startMs, g_driverMarkerTrace.simulationStarts,
-             g_driverMarkerTrace.presentStarts, g_driverMarkerTrace.asyncPresentStarts, totalPresents, syncRatio,
-             asyncRatio, totalRatio, ReflexHooks::dlssgFrameCountToGenerate(),
+             g_driverMarkerTrace.presentStarts, g_driverMarkerTrace.asyncPresentStarts, totalPresents,
+             syncRatio, asyncRatio, totalRatio, ReflexHooks::dlssgFrameCountToGenerate(),
              magic_enum::enum_name(State::Instance().activeFgOutput));
 
     g_driverMarkerTrace.startMs = nowMs;
@@ -80,13 +83,13 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_
 #ifdef LOG_REFLEX_CALLS
     LOG_FUNC();
 #endif
+    const bool diagnostics = Config::Instance()->FGDLSSGDiagnostics.value_or_default();
     const uint32_t requestedIntervalUs = pSetSleepModeParams->minimumIntervalUs;
     const bool requestedLowLatency = pSetSleepModeParams->bLowLatencyMode != 0;
     const bool requestedBoost = pSetSleepModeParams->bLowLatencyBoost != 0;
     const bool requestedMarkers = pSetSleepModeParams->bUseMarkersToOptimize != 0;
     const bool requestedMinQueue = pSetSleepModeParams->bUseMinQueueTime != 0;
 
-    // Store for later so we can adjust the fps whenever we want
     memcpy(&_lastSleepParams, pSetSleepModeParams, sizeof(NV_SET_SLEEP_MODE_PARAMS));
     _lastSleepDev = pDev;
 
@@ -97,22 +100,17 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetSleepMode(IUnknown* pDev, NV_SET_SLEEP_
         pSetSleepModeParams->minimumIntervalUs = _minimumIntervalUs;
 
     const uint32_t effectiveIntervalUs = pSetSleepModeParams->minimumIntervalUs;
-    NvAPI_Status result;
-    if (State::Instance().activeFgOutput == FGOutput::XeFG)
-        result = nvapi_calls::NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams);
-    else
-        result = o_NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams);
+    const auto result = State::Instance().activeFgOutput == FGOutput::XeFG
+                            ? nvapi_calls::NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams)
+                            : o_NvAPI_D3D_SetSleepMode(pDev, pSetSleepModeParams);
 
-    static std::mutex sleepModeTraceMutex;
-    static bool haveLast = false;
-    static uint32_t lastRequested = 0;
-    static uint32_t lastEffective = 0;
-    static bool lastLowLatency = false;
-    static bool lastBoost = false;
-    static bool lastMarkers = false;
-    static bool lastMinQueue = false;
+    if (diagnostics)
     {
-        std::lock_guard<std::mutex> lock(sleepModeTraceMutex);
+        static std::mutex mutex;
+        static bool haveLast = false;
+        static uint32_t lastRequested = 0, lastEffective = 0;
+        static bool lastLowLatency = false, lastBoost = false, lastMarkers = false, lastMinQueue = false;
+        std::lock_guard<std::mutex> lock(mutex);
         if (!haveLast || lastRequested != requestedIntervalUs || lastEffective != effectiveIntervalUs ||
             lastLowLatency != requestedLowLatency || lastBoost != requestedBoost ||
             lastMarkers != requestedMarkers || lastMinQueue != requestedMinQueue)
@@ -180,12 +178,13 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_Sleep(IUnknown* pDev)
         return nvapi_calls::NvAPI_D3D_Sleep(pDev);
 
     _lastSleepDev = pDev;
+    if (!Config::Instance()->FGDLSSGDiagnostics.value_or_default())
+        return o_NvAPI_D3D_Sleep(pDev);
 
     const auto sleepStart = std::chrono::steady_clock::now();
     const auto result = o_NvAPI_D3D_Sleep(pDev);
-    const double sleepMs = std::chrono::duration<double, std::milli>(
-                               std::chrono::steady_clock::now() - sleepStart)
-                               .count();
+    const double sleepMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sleepStart).count();
 
     struct SleepTraceWindow
     {
@@ -197,14 +196,12 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_Sleep(IUnknown* pDev)
     thread_local SleepTraceWindow window {};
     if (window.calls == 0)
         window.started = sleepStart;
-
     window.sumMs += sleepMs;
     window.maxMs = std::max(window.maxMs, sleepMs);
     ++window.calls;
 
-    const double elapsedMs = std::chrono::duration<double, std::milli>(
-                                 std::chrono::steady_clock::now() - window.started)
-                                 .count();
+    const double elapsedMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - window.started).count();
     if (elapsedMs >= 5000.0)
     {
         LOG_INFO("[SLEEPTRACE] kind=sleep_window calls={} mean_ms={:.3f} max_ms={:.3f} "

@@ -110,6 +110,7 @@ struct Telemetry
 const Telemetry& GetTelemetry();
 void RecordSetOptions(unsigned int requested, unsigned int sent, bool active, unsigned int result);
 void RecordState(unsigned int presented);
+void ResetTelemetry();
 
 // A Streamline DLSS-G plugin (sl.dlss_g) was loaded, from wherever the game or the driver's OTA store
 // put it. Its own frame-count clamp is neutralised once the snippet unlock has landed, so a wrapper

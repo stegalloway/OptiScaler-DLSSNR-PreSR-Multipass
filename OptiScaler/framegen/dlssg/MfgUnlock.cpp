@@ -1109,6 +1109,18 @@ void MfgUnlock::RecordState(unsigned int presented)
     g_telemetry.stateSeen.store(true, std::memory_order_release);
 }
 
+void MfgUnlock::ResetTelemetry()
+{
+    g_telemetry.optionsSeen.store(false, std::memory_order_relaxed);
+    g_telemetry.active.store(false, std::memory_order_relaxed);
+    g_telemetry.requested.store(1, std::memory_order_relaxed);
+    g_telemetry.sent.store(1, std::memory_order_relaxed);
+    g_telemetry.result.store(0, std::memory_order_relaxed);
+    g_telemetry.stateSeen.store(false, std::memory_order_relaxed);
+    g_telemetry.presented.store(0, std::memory_order_relaxed);
+    g_telemetry.maxPresented.store(0, std::memory_order_relaxed);
+}
+
 void MfgUnlock::OnStreamlinePluginLoaded(HMODULE plugin)
 {
     if (plugin == nullptr || !AdaUnlockWanted())
