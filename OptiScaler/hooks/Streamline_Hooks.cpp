@@ -2617,18 +2617,60 @@ void StreamlineHooks::unhookDlssg()
 {
     LOG_FUNC();
 
+    if (!o_dlssg_slGetPluginFunction)
+    {
+        hookedDlssgModule = nullptr;
+        return;
+    }
+
+    // A plugin can be unloaded before Streamline asks us to hook its replacement.
+    // Never ask Detours to detach through a trampoline whose backing image is gone.
+    if (hookedDlssgModule != nullptr)
+    {
+        HMODULE stillMapped = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCWSTR>(hookedDlssgModule), &stillMapped))
+        {
+            LOG_DEBUG("DLSSG hook owner already unloaded; discarding stale hook bookkeeping");
+            o_dlssg_slGetPluginFunction = nullptr;
+            hookedDlssgModule = nullptr;
+            return;
+        }
+    }
+
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
+    DetourDetach(&(PVOID&) o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction);
 
-    if (o_dlssg_slGetPluginFunction)
-        DetourDetach(&(PVOID&) o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction);
-
-    auto detourResult = DetourTransactionCommit();
+    const auto detourResult = DetourTransactionCommit();
     if (detourResult != NO_ERROR)
     {
+        // This transaction contains only the DLSS-G slGetPluginFunction hook.
+        // Keep the live bookkeeping so a later call can retry the detach.
         LOG_ERROR("Failed to unhook DLSSG: {:X}", detourResult);
-        o_dlssg_slGetPluginFunction = nullptr;
+        return;
     }
+
+    o_dlssg_slGetPluginFunction = nullptr;
+    hookedDlssgModule = nullptr;
+}
+
+void StreamlineHooks::notifyDlssgModuleUnloaded(HMODULE module)
+{
+    if (module == nullptr || module != hookedDlssgModule)
+        return;
+
+    HMODULE stillMapped = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(module), &stillMapped))
+        return;
+
+    // The real loader has already unmapped the image, so no Detours operation is
+    // valid anymore. Retire only the stale bookkeeping; the next generation will
+    // install a fresh hook in hookDlssg().
+    o_dlssg_slGetPluginFunction = nullptr;
+    hookedDlssgModule = nullptr;
+    LOG_DEBUG("DLSSG plugin unloaded; retired stale hook bookkeeping");
 }
 
 void StreamlineHooks::hookDlssg(HMODULE slDlssg)
@@ -2660,11 +2702,16 @@ void StreamlineHooks::hookDlssg(HMODULE slDlssg)
 
         DetourAttach(&(PVOID&) o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction);
 
-        auto detourResult = DetourTransactionCommit();
+        const auto detourResult = DetourTransactionCommit();
         if (detourResult != NO_ERROR)
         {
             LOG_ERROR("Failed to hook DLSSG: {:X}", detourResult);
             o_dlssg_slGetPluginFunction = nullptr;
+            hookedDlssgModule = nullptr;
+        }
+        else
+        {
+            hookedDlssgModule = slDlssg;
         }
     }
 }

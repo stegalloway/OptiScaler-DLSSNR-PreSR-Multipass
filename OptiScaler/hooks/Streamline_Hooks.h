@@ -161,6 +161,9 @@ class StreamlineHooks
 
     static void unhookDlssg();
     static void hookDlssg(HMODULE slDlssg);
+    // Called after a real loader unload attempt. Retires hook bookkeeping only
+    // when the module image is actually gone, so reference-count decrements stay hooked.
+    static void notifyDlssgModuleUnloaded(HMODULE module);
 
     static void unhookLocalDlssg();
     static void hookLocalDlssg(HMODULE slDlssg);
@@ -269,6 +272,7 @@ class StreamlineHooks
     inline static PFN_slGetPluginJSONConfig_sl1 o_dlssg_slGetPluginJSONConfig_sl1 = nullptr;
     inline static decltype(&slDLSSGSetOptions) o_slDLSSGSetOptions = nullptr;
     inline static decltype(&slDLSSGGetState) o_slDLSSGGetState = nullptr;
+    inline static HMODULE hookedDlssgModule = nullptr;
     static inline DlssgOptionsState dlssgOptionsState {};
     static inline std::atomic_bool gameDlssgOptionsObserved { false };
     static inline std::atomic_bool dlssgFeatureStateObserved { false };

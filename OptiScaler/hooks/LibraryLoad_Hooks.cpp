@@ -717,10 +717,10 @@ std::optional<NTSTATUS> LibraryLoadHooks::FreeLibrary(PVOID lpLibrary)
 
 void LibraryLoadHooks::NotifyLibraryUnloaded(PVOID library)
 {
+    const auto module = static_cast<HMODULE>(library);
+    StreamlineHooks::notifyDlssgModuleUnloaded(module);
 #if defined(OPTISCALER_RTX40_MFG)
-    MfgUnlock::OnStreamlinePluginUnloaded(static_cast<HMODULE>(library));
-#else
-    (void) library;
+    MfgUnlock::OnStreamlinePluginUnloaded(module);
 #endif
 }
 

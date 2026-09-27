@@ -108,3 +108,23 @@ Key evidence:
 The Streamline `Setting different 'common' constants multiple times within the same frame` messages are pre-existing noise, not introduced by this change: the archive already contains hundreds of occurrences, including the earlier cap-off controlled sweep.
 
 Result: A-C lifecycle acceptance passed on Miles Morales. Keep `[DLSSG] Diagnostics=false` for normal use.
+
+## DLSS-G stale-detour follow-up (2026-09-27)
+
+The final Miles combined run exposed one benign startup error: `Failed to unhook DLSSG: 1E7`
+(`ERROR_INVALID_ADDRESS`). The first `sl.dlss_g` generation had already been unmapped before the replacement
+generation was hooked, but the old Detours trampoline pointer was still non-null, so `unhookDlssg()` attempted
+to detach through dead module state.
+
+Follow-up hardening:
+
+- the active DLSS-G hook now records its owning HMODULE;
+- the existing post-loader-unload notification retires the hook bookkeeping only after Windows confirms that image
+  is no longer mapped, so ordinary reference-count decrements do not discard a live hook;
+- `unhookDlssg()` also refuses to detach if its recorded owner is already gone;
+- a genuine detach-transaction failure keeps the live hook bookkeeping so a later call can retry instead of losing it;
+- the DLSS-G detach transaction contains only the `slGetPluginFunction` hook, so a failed detach cannot leave
+  Reflex/common/interposer hooks partially batched with it.
+
+This removes the misleading `1E7` path while preserving a real detach error if one occurs against a still-live
+plugin.
