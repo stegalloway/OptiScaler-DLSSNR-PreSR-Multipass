@@ -245,28 +245,29 @@
       <AdditionalOptions>/ignore:4099</AdditionalOptions>
     </Link>
     <PostBuildEvent>
-      <Command>md $(SolutionDir)x64\Release\a\
-move $(SolutionDir)x64\Release\$(TargetFileName) $(SolutionDir)x64\Release\a\
-md $(SolutionDir)x64\Release\a\Licenses
-del /Q $(SolutionDir)x64\Release\a\Licenses\*.*
-copy $(SolutionDir)external\xess\LICENSE.txt $(SolutionDir)x64\Release\a\Licenses\XeSS_LICENSE.txt /Y
-copy "$(SolutionDir)Licenses\RenoDX_ATTRIBUTION.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
-copy "$(SolutionDir)Licenses\MFGUnlock_LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\ /Y
-md $(SolutionDir)x64\Release\a\OptiScaler
-copy $(SolutionDir)external\xess\bin\*.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
-copy $(SolutionDir)external\FidelityFX-SDK\docs\license.md $(SolutionDir)x64\Release\a\OptiScaler\Licenses\FidelityFX_v1_LICENSE.md /Y
-copy $(SolutionDir)external\FidelityFX-SDK\PrebuiltSignedDLL\amd_fidelityfx_vk.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
-copy $(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_loader_dx12.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
-copy $(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_upscaler_dx12.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
-copy $(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_framegeneration_dx12.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
-copy $(SolutionDir)external\FidelityFX-SDK-v2\docs\license.md $(SolutionDir)x64\Release\a\Licenses\FidelityFX_v2_LICENSE.md /Y
-copy $(SolutionDir)OptiScaler.ini $(SolutionDir)x64\Release\a\ /Y
-copy $(SolutionDir)setup_windows.bat $(SolutionDir)x64\Release\a\ /Y
-copy $(SolutionDir)setup_linux.sh $(SolutionDir)x64\Release\a\ /Y
-md $(SolutionDir)x64\Release\a\OptiScaler\D3D12_OptiScaler\
-copy "$(SolutionDir)external\directx_agility_sdk\lib\*.dll" $(SolutionDir)x64\Release\a\OptiScaler\D3D12_OptiScaler\ /Y
-copy "$(SolutionDir)external\directx_agility_sdk\LICENSE.txt" $(SolutionDir)x64\Release\a\Licenses\DirectX_LICENSE.txt /Y
-copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y</Command>
+      <Command>if not exist &quot;$(OutDir)a&quot; md &quot;$(OutDir)a&quot;
+move /Y &quot;$(TargetPath)&quot; &quot;$(OutDir)a\$(TargetFileName)&quot;
+if not exist &quot;$(OutDir)a\Licenses&quot; md &quot;$(OutDir)a\Licenses&quot;
+del /Q &quot;$(OutDir)a\Licenses\*.*&quot;
+copy &quot;$(SolutionDir)external\xess\LICENSE.txt&quot; &quot;$(OutDir)a\Licenses\XeSS_LICENSE.txt&quot; /Y
+copy &quot;$(SolutionDir)Licenses\RenoDX_ATTRIBUTION.txt&quot; &quot;$(OutDir)a\Licenses\&quot; /Y
+copy &quot;$(SolutionDir)Licenses\MFGUnlock_LICENSE.txt&quot; &quot;$(OutDir)a\Licenses\&quot; /Y
+if not exist &quot;$(OutDir)a\OptiScaler&quot; md &quot;$(OutDir)a\OptiScaler&quot;
+if not exist &quot;$(OutDir)a\OptiScaler\Licenses&quot; md &quot;$(OutDir)a\OptiScaler\Licenses&quot;
+copy &quot;$(SolutionDir)external\xess\bin\*.dll&quot; &quot;$(OutDir)a\OptiScaler\&quot; /Y
+copy &quot;$(SolutionDir)external\FidelityFX-SDK\docs\license.md&quot; &quot;$(OutDir)a\OptiScaler\Licenses\FidelityFX_v1_LICENSE.md&quot; /Y
+copy &quot;$(SolutionDir)external\FidelityFX-SDK\PrebuiltSignedDLL\amd_fidelityfx_vk.dll&quot; &quot;$(OutDir)a\OptiScaler\&quot; /Y
+copy &quot;$(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_loader_dx12.dll&quot; &quot;$(OutDir)a\OptiScaler\&quot; /Y
+copy &quot;$(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_upscaler_dx12.dll&quot; &quot;$(OutDir)a\OptiScaler\&quot; /Y
+copy &quot;$(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_framegeneration_dx12.dll&quot; &quot;$(OutDir)a\OptiScaler\&quot; /Y
+copy &quot;$(SolutionDir)external\FidelityFX-SDK-v2\docs\license.md&quot; &quot;$(OutDir)a\Licenses\FidelityFX_v2_LICENSE.md&quot; /Y
+copy &quot;$(SolutionDir)OptiScaler.ini&quot; &quot;$(OutDir)a\&quot; /Y
+copy &quot;$(SolutionDir)setup_windows.bat&quot; &quot;$(OutDir)a\&quot; /Y
+copy &quot;$(SolutionDir)setup_linux.sh&quot; &quot;$(OutDir)a\&quot; /Y
+if not exist &quot;$(OutDir)a\OptiScaler\D3D12_OptiScaler&quot; md &quot;$(OutDir)a\OptiScaler\D3D12_OptiScaler&quot;
+copy &quot;$(SolutionDir)external\directx_agility_sdk\lib\*.dll&quot; &quot;$(OutDir)a\OptiScaler\D3D12_OptiScaler\&quot; /Y
+copy &quot;$(SolutionDir)external\directx_agility_sdk\LICENSE.txt&quot; &quot;$(OutDir)a\Licenses\DirectX_LICENSE.txt&quot; /Y
+copy NUL &quot;$(OutDir)a\!! EXTRACT ALL FILES TO GAME FOLDER !!&quot; /Y</Command>
     </PostBuildEvent>
     <PreBuildEvent>
       <Command>powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $date = Get-Date -Format 'yyyyMMdd_HHmmss'; $commit = (git -C '$(SolutionDir).' rev-parse --short HEAD 2&gt;$null); if (-not $commit) { $commit = 'unknown' }; function Write-Retry([string]$path, [string]$value) { for ($i = 0; $i -lt 30; $i++) { try { [System.IO.File]::WriteAllText($path, $value + [Environment]::NewLine, [System.Text.Encoding]::ASCII); return } catch [System.IO.IOException] { if ($i -eq 29) { throw }; Start-Sleep -Milliseconds 100 } } }; Write-Retry '$(ProjectDir)resource_build_date.h' ('#define VER_BUILD_DATE \"' + $date + '\"'); Write-Retry '$(ProjectDir)resource_build_commit.h' ('#define VER_BUILD_COMMIT \"' + $commit + '\"');"</Command>
