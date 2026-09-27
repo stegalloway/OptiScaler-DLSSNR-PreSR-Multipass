@@ -35,8 +35,7 @@ enum Issue : uint32_t
 };
 
 inline constexpr uint32_t StructuralIssueMask = InvalidOptionalResource | HudlessExtentMismatch |
-                                                HudlessFormatMismatch | UiExtentMismatch |
-                                                UiColorAlphaLowPrecision;
+                                                HudlessFormatMismatch | UiExtentMismatch | UiColorAlphaLowPrecision;
 
 enum class AutoRecompositionAction : uint8_t
 {
@@ -289,8 +288,7 @@ inline BatchObservation AssessTags(const sl::ResourceTag* tags, uint32_t count, 
     const bool uiPresent = result.uiColorAlpha.present || result.uiAlpha.present;
     result.hasCompletePair = result.hudless.present && uiPresent;
 
-    result.structurallyValidForRecomposition =
-        result.hasCompletePair && (result.issues & StructuralIssueMask) == 0;
+    result.structurallyValidForRecomposition = result.hasCompletePair && (result.issues & StructuralIssueMask) == 0;
 
     if (hdr && result.relevant)
         result.issues |= HdrTransferUnproven;
@@ -300,7 +298,6 @@ inline BatchObservation AssessTags(const sl::ResourceTag* tags, uint32_t count, 
     result.automaticRecompositionProven = !hdr && result.structurallyValidForRecomposition;
     return result;
 }
-
 
 inline AutoRecompositionAction DecideAutomaticRecomposition(bool policyEnabled, const Snapshot& snapshot,
                                                             const sl::DLSSGOptions& options)
@@ -330,9 +327,12 @@ inline constexpr const char* AutoRecompositionActionName(AutoRecompositionAction
 {
     switch (action)
     {
-    case AutoRecompositionAction::Enable: return "enable";
-    case AutoRecompositionAction::DisableUnsafe: return "disable-unsafe";
-    default: return "preserve";
+    case AutoRecompositionAction::Enable:
+        return "enable";
+    case AutoRecompositionAction::DisableUnsafe:
+        return "disable-unsafe";
+    default:
+        return "preserve";
     }
 }
 

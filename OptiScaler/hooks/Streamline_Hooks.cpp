@@ -587,8 +587,7 @@ void StreamlineHooks::observeMfgHdrUiOptions(const sl::ViewportHandle& viewport,
     }
 }
 
-MfgHdrUiDiagnostics::AutoRecompositionAction
-StreamlineHooks::applyMfgHdrUiAutomaticHandling(sl::DLSSGOptions& options)
+MfgHdrUiDiagnostics::AutoRecompositionAction StreamlineHooks::applyMfgHdrUiAutomaticHandling(sl::DLSSGOptions& options)
 {
     const bool enabled = Config::Instance()->FGDLSSGAutoHdrUiHandling.value_or_default();
     std::scoped_lock lock(hdrUiDiagnosticsMutex);
