@@ -77,6 +77,49 @@ int main()
     assert(!assessment.automaticRecompositionProven);
     assert((assessment.issues & MfgHdrUiDiagnostics::HdrTransferUnproven) != 0);
 
+    MfgHdrUiDiagnostics::Snapshot snapshot {};
+    snapshot.seen = true;
+    snapshot.tagBatches = 1;
+    snapshot.outputColorSpaceKnown = true;
+    snapshot.hasCompletePair = true;
+    snapshot.structurallyValidForRecomposition = true;
+
+    sl::DLSSGOptions policyOptions {};
+    policyOptions.structVersion = sl::kStructVersion4;
+    policyOptions.mode = sl::DLSSGMode::eOn;
+    policyOptions.enableUserInterfaceRecomposition = sl::Boolean::eFalse;
+    snapshot.options = MfgHdrUiDiagnostics::ObserveOptions(policyOptions);
+
+    snapshot.hdrOutput = false;
+    snapshot.issues = MfgHdrUiDiagnostics::None;
+    assert(MfgHdrUiDiagnostics::DecideAutomaticRecomposition(true, snapshot, policyOptions) ==
+           MfgHdrUiDiagnostics::AutoRecompositionAction::Enable);
+    assert(MfgHdrUiDiagnostics::DecideAutomaticRecomposition(false, snapshot, policyOptions) ==
+           MfgHdrUiDiagnostics::AutoRecompositionAction::Preserve);
+
+    snapshot.hdrOutput = true;
+    snapshot.issues = MfgHdrUiDiagnostics::HdrTransferUnproven;
+    assert(MfgHdrUiDiagnostics::DecideAutomaticRecomposition(true, snapshot, policyOptions) ==
+           MfgHdrUiDiagnostics::AutoRecompositionAction::Preserve);
+
+    snapshot.hdrOutput = false;
+    snapshot.issues = MfgHdrUiDiagnostics::UiExtentMismatch;
+    policyOptions.enableUserInterfaceRecomposition = sl::Boolean::eTrue;
+    assert(MfgHdrUiDiagnostics::DecideAutomaticRecomposition(true, snapshot, policyOptions) ==
+           MfgHdrUiDiagnostics::AutoRecompositionAction::DisableUnsafe);
+
+    // A different subsystem may promote its temporary copy to v5, but the original
+    // v3 caller still does not authorize editing the v4 UI-recomposition field.
+    policyOptions.structVersion = sl::kStructVersion5;
+    sl::DLSSGOptions originalV3 {};
+    originalV3.structVersion = sl::kStructVersion3;
+    originalV3.mode = sl::DLSSGMode::eOn;
+    snapshot.options = MfgHdrUiDiagnostics::ObserveOptions(originalV3);
+    assert(MfgHdrUiDiagnostics::DecideAutomaticRecomposition(true, snapshot, policyOptions) ==
+           MfgHdrUiDiagnostics::AutoRecompositionAction::Preserve);
+    snapshot.options = MfgHdrUiDiagnostics::ObserveOptions(policyOptions);
+    policyOptions.structVersion = sl::kStructVersion4;
+
     hudless.width = 2560;
     assessment = MfgHdrUiDiagnostics::AssessTags(
         tags, 3, false, {}, MfgHdrUiDiagnostics::FormatApi::Dxgi);
@@ -101,6 +144,6 @@ int main()
     assert(!assessment.uiColorAlpha.present);
     assert(!assessment.hasCompletePair);
 
-    std::puts("PASS: HDR/UI diagnostics observe structure without mutation");
+    std::puts("PASS: HDR/UI diagnostics and conservative automatic recomposition policy");
     return 0;
 }

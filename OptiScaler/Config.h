@@ -747,6 +747,7 @@ class Config
     CustomOptional<int> FGDLSSGInterpolationCount { 1 }; // For Opti's own SL instance
     CustomOptional<bool> FGDLSSGUseGamesReflexMarkers { true };
     CustomOptional<bool> FGDLSSGDiagnostics { false }; // pacing/teardown trace logging; off by default
+    CustomOptional<bool> FGDLSSGAutoHdrUiHandling { true }; // conservative known-ABI UI recomposition policy
     CustomOptional<int, NoDefault>
         FGDLSSGOverrideInterpolationCount; // For overriding game's value sent to SL, could be Nvngx FG, could be noFG
                                            // but someone just uses real DLSSG

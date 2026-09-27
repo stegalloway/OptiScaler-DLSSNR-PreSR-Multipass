@@ -587,6 +587,44 @@ void StreamlineHooks::observeMfgHdrUiOptions(const sl::ViewportHandle& viewport,
     }
 }
 
+MfgHdrUiDiagnostics::AutoRecompositionAction
+StreamlineHooks::applyMfgHdrUiAutomaticHandling(sl::DLSSGOptions& options)
+{
+    const bool enabled = Config::Instance()->FGDLSSGAutoHdrUiHandling.value_or_default();
+    std::scoped_lock lock(hdrUiDiagnosticsMutex);
+    const auto action = MfgHdrUiDiagnostics::DecideAutomaticRecomposition(enabled, hdrUiDiagnostics, options);
+    const auto previousAction = hdrUiDiagnostics.automaticAction;
+    hdrUiDiagnostics.automaticAction = action;
+
+    bool changed = false;
+    if (action == MfgHdrUiDiagnostics::AutoRecompositionAction::Enable &&
+        options.enableUserInterfaceRecomposition != sl::Boolean::eTrue)
+    {
+        options.enableUserInterfaceRecomposition = sl::Boolean::eTrue;
+        changed = true;
+    }
+    else if (action == MfgHdrUiDiagnostics::AutoRecompositionAction::DisableUnsafe &&
+             options.enableUserInterfaceRecomposition != sl::Boolean::eFalse)
+    {
+        options.enableUserInterfaceRecomposition = sl::Boolean::eFalse;
+        changed = true;
+    }
+
+    if (changed)
+        ++hdrUiDiagnostics.automaticApplications;
+
+    if (previousAction != action)
+    {
+        LOG_INFO("DLSSG HDR/UI automatic policy: action={} HDR={} pair={} structural_ok={} issues=0x{:X} "
+                 "options_v{} applications={}",
+                 MfgHdrUiDiagnostics::AutoRecompositionActionName(action), hdrUiDiagnostics.hdrOutput,
+                 hdrUiDiagnostics.hasCompletePair, hdrUiDiagnostics.structurallyValidForRecomposition,
+                 hdrUiDiagnostics.issues, options.structVersion, hdrUiDiagnostics.automaticApplications);
+    }
+
+    return action;
+}
+
 void StreamlineHooks::observeMfgHdrUiTags(const sl::ViewportHandle& viewport, const sl::ResourceTag* tags,
                                           uint32_t count, const sl::FrameToken* frame)
 {
@@ -1609,6 +1647,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         }
     }
 
+    applyMfgHdrUiAutomaticHandling(newOptions);
     return submitOptions();
 }
 

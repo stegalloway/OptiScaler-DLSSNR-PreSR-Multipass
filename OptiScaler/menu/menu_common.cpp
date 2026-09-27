@@ -3348,6 +3348,14 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
     else
         ImGui::TextDisabled("Latency monitor: waiting for a D3D Reflex report.");
 
+    bool automaticHdrUi = config->FGDLSSGAutoHdrUiHandling.value_or_default();
+    if (ImGui::Checkbox("Automatic HDR/UI handling##ada", &automaticHdrUi))
+        config->FGDLSSGAutoHdrUiHandling = automaticHdrUi;
+    showHelp("Known DLSS-G v4/v5 options only. Enables UI recomposition for a structurally valid SDR HUDless/UI "
+             "pair, disables recomposition for an invalid pair, and never auto-enables it in HDR because transfer "
+             "compatibility cannot be proven from Streamline metadata. It never rewrites ResourceTags or promotes "
+             "the game's options struct.\nini: [DLSSG] AutoHdrUiHandling.");
+
     const auto hdrUi = StreamlineHooks::getMfgHdrUiDiagnostics();
     if (!hdrUi.seen)
     {
@@ -3362,6 +3370,9 @@ static void RenderAdaUnlockOptions(Config* config, const MfgUnlock::Status& stat
                                         : hdrUi.options.uiRecompositionEnabled ? "on" : "off";
         ImGui::TextDisabled("HDR/UI monitor: %s | options v%zu | UI recomposition %s | issues 0x%02X",
                             outputKind, hdrUi.options.structVersion, recomposition, hdrUi.issues);
+        ImGui::TextDisabled("  Automatic policy: %s | applications %llu",
+                            MfgHdrUiDiagnostics::AutoRecompositionActionName(hdrUi.automaticAction),
+                            static_cast<unsigned long long>(hdrUi.automaticApplications));
 
         if (hdrUi.hudless.mentioned || hdrUi.uiColorAlpha.mentioned || hdrUi.uiAlpha.mentioned)
         {

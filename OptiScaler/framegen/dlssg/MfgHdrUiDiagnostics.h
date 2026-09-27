@@ -34,6 +34,17 @@ enum Issue : uint32_t
     OptionalExtensionPresent = 1u << 6,
 };
 
+inline constexpr uint32_t StructuralIssueMask = InvalidOptionalResource | HudlessExtentMismatch |
+                                                HudlessFormatMismatch | UiExtentMismatch |
+                                                UiColorAlphaLowPrecision;
+
+enum class AutoRecompositionAction : uint8_t
+{
+    Preserve,
+    Enable,
+    DisableUnsafe,
+};
+
 struct OutputDescription
 {
     uint32_t width = 0;
@@ -93,6 +104,8 @@ struct Snapshot
     uint64_t frameAwareBatches = 0;
     uint64_t optionCalls = 0;
     uint64_t changes = 0;
+    uint64_t automaticApplications = 0;
+    AutoRecompositionAction automaticAction = AutoRecompositionAction::Preserve;
 
     bool viewportKnown = false;
     uint32_t viewport = 0;
@@ -276,11 +289,8 @@ inline BatchObservation AssessTags(const sl::ResourceTag* tags, uint32_t count, 
     const bool uiPresent = result.uiColorAlpha.present || result.uiAlpha.present;
     result.hasCompletePair = result.hudless.present && uiPresent;
 
-    constexpr uint32_t structuralIssues =
-        InvalidOptionalResource | HudlessExtentMismatch | HudlessFormatMismatch | UiExtentMismatch |
-        UiColorAlphaLowPrecision;
     result.structurallyValidForRecomposition =
-        result.hasCompletePair && (result.issues & structuralIssues) == 0;
+        result.hasCompletePair && (result.issues & StructuralIssueMask) == 0;
 
     if (hdr && result.relevant)
         result.issues |= HdrTransferUnproven;
@@ -289,6 +299,41 @@ inline BatchObservation AssessTags(const sl::ResourceTag* tags, uint32_t count, 
     // structural SDR compatibility; no runtime option is changed here.
     result.automaticRecompositionProven = !hdr && result.structurallyValidForRecomposition;
     return result;
+}
+
+
+inline AutoRecompositionAction DecideAutomaticRecomposition(bool policyEnabled, const Snapshot& snapshot,
+                                                            const sl::DLSSGOptions& options)
+{
+    // Eligibility comes from the game's original observed ABI, not from a temporary
+    // version promotion used by another OptiScaler override such as Dynamic MFG.
+    if (!policyEnabled || options.mode == sl::DLSSGMode::eOff || options.structVersion < sl::kStructVersion4 ||
+        options.structVersion > sl::kStructVersion5 || !snapshot.options.uiRecompositionKnown ||
+        snapshot.tagBatches == 0)
+        return AutoRecompositionAction::Preserve;
+
+    const bool requested = options.enableUserInterfaceRecomposition == sl::Boolean::eTrue;
+    if ((snapshot.issues & StructuralIssueMask) != 0u)
+        return requested ? AutoRecompositionAction::DisableUnsafe : AutoRecompositionAction::Preserve;
+
+    if (!snapshot.outputColorSpaceKnown)
+        return AutoRecompositionAction::Preserve;
+
+    if (!snapshot.hdrOutput && snapshot.structurallyValidForRecomposition && !requested)
+        return AutoRecompositionAction::Enable;
+
+    // HDR transfer compatibility is not inferable from ResourceTag metadata.
+    return AutoRecompositionAction::Preserve;
+}
+
+inline constexpr const char* AutoRecompositionActionName(AutoRecompositionAction action)
+{
+    switch (action)
+    {
+    case AutoRecompositionAction::Enable: return "enable";
+    case AutoRecompositionAction::DisableUnsafe: return "disable-unsafe";
+    default: return "preserve";
+    }
 }
 
 inline OptionsObservation ObserveOptions(const sl::DLSSGOptions& options)

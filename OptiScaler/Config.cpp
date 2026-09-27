@@ -259,6 +259,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             FGDLSSGUseGamesReflexMarkers.set_from_config(readBool("DLSSG", "UseGamesReflexMarkers"));
             FGDLSSGDiagnostics.set_from_config(readBool("DLSSG", "Diagnostics"));
+            FGDLSSGAutoHdrUiHandling.set_from_config(readBool("DLSSG", "AutoHdrUiHandling"));
 
             FGDLSSGOverrideInterpolationCount.set_from_config(readInt("DLSSG", "OverrideInterpolationCount"));
             if (FGDLSSGOverrideInterpolationCount.has_value() &&
@@ -1155,6 +1156,8 @@ bool Config::SaveIni(std::filesystem::path destination)
                      GetBoolValue(Instance()->FGDLSSGUseGamesReflexMarkers.value_for_config()).c_str());
         ini.SetValue("DLSSG", "Diagnostics",
                      GetBoolValue(Instance()->FGDLSSGDiagnostics.value_for_config()).c_str());
+        ini.SetValue("DLSSG", "AutoHdrUiHandling",
+                     GetBoolValue(Instance()->FGDLSSGAutoHdrUiHandling.value_for_config()).c_str());
         ini.SetValue("DLSSG", "OverrideInterpolationCount",
                      GetIntValue(Instance()->FGDLSSGOverrideInterpolationCount.value_for_config()).c_str());
         ini.SetValue("DLSSG", "FramerateTargetDMFG",

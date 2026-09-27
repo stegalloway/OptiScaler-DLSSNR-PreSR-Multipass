@@ -190,6 +190,7 @@ class StreamlineHooks
     static void observeMfgHdrUiTags(const sl::ViewportHandle& viewport, const sl::ResourceTag* tags, uint32_t count,
                                     const sl::FrameToken* frame = nullptr);
     static void observeMfgHdrUiOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options);
+    static MfgHdrUiDiagnostics::AutoRecompositionAction applyMfgHdrUiAutomaticHandling(sl::DLSSGOptions& options);
 
     // System caps
     inline static SystemCaps* systemCaps = nullptr;
