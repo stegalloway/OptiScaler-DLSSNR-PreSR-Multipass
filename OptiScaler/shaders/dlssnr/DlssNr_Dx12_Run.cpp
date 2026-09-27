@@ -374,12 +374,27 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     ID3D12Resource* const originalDepthIn = depthIn;
     ID3D12Resource* const originalMotionIn = motionIn;
 
+    // The game's motion scale is measured in render pixels for low-resolution vectors and
+    // output pixels otherwise. Spatial compression converts those vectors to NR-frame pixels
+    // before warping/packing them, while the ordinary path converts to the texture the model reads.
+    const bool renderMotionScale = cfg.DlssNrRenderMotionScale.value_or_default();
+    const unsigned int mvRefW = !renderMotionScale                 ? width
+                                : frame.MotionVectorsLowResolution ? frame.RenderSubrectWidth
+                                                                   : frame.OutputWidth;
+    const unsigned int mvRefH = !renderMotionScale                 ? height
+                                : frame.MotionVectorsLowResolution ? frame.RenderSubrectHeight
+                                                                   : frame.OutputHeight;
+    const float spatialMvScaleX =
+        frame.MvScaleX * (mvRefW != 0 ? (float) width / (float) mvRefW : 1.0f);
+    const float spatialMvScaleY =
+        frame.MvScaleY * (mvRefH != 0 ? (float) height / (float) mvRefH : 1.0f);
+
     if (spatial)
     {
         const auto colorConstants = DlssNr::Spatial::MakeConstants(
-            spatialLayout, 100, guides, frame.MvScaleX, frame.MvScaleY, width, height);
+            spatialLayout, 100, guides, spatialMvScaleX, spatialMvScaleY, width, height);
         const auto guideConstants = DlssNr::Spatial::MakeConstants(
-            spatialLayout, 101, guides, frame.MvScaleX, frame.MvScaleY, width, height);
+            spatialLayout, 101, guides, spatialMvScaleX, spatialMvScaleY, width, height);
         const bool packedColor = shader.DispatchSpatial(cmdList, colorConstants, nr.colorCopy, nullptr, nullptr,
                                                         nr.spatialColor);
         const bool packedGuides = packedColor &&
@@ -487,36 +502,45 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     // 100% flickered where it had been steady. Before v0.8.92 the reference was the frame size,
     // which halved every vector below 100% in the same game; RenderMotionScale=false keeps that
     // for an A/B.
-    const bool renderMotionScale = cfg.DlssNrRenderMotionScale.value_or_default();
     const unsigned int mvGuideW = !renderMotionScale ? workWidth : matchedGuides ? workWidth : guides.motion.width;
     const unsigned int mvGuideH = !renderMotionScale ? workHeight : matchedGuides ? workHeight : guides.motion.height;
-    const unsigned int mvRefW = !renderMotionScale                 ? width
-                                : frame.MotionVectorsLowResolution ? frame.RenderSubrectWidth
-                                                                   : frame.OutputWidth;
-    const unsigned int mvRefH = !renderMotionScale                 ? height
-                                : frame.MotionVectorsLowResolution ? frame.RenderSubrectHeight
-                                                                   : frame.OutputHeight;
     const float mvToWorkX = mvRefW != 0 ? (float) mvGuideW / (float) mvRefW : 1.0f;
     const float mvToWorkY = mvRefH != 0 ? (float) mvGuideH / (float) mvRefH : 1.0f;
     {
         static unsigned int loggedRefW = 0, loggedGuideW = 0, loggedWorkW = 0;
-        if (loggedRefW != mvRefW || loggedGuideW != mvGuideW || loggedWorkW != workWidth)
+        static int loggedMode = -1;
+        const int motionMode = spatial ? (renderMotionScale ? 3 : 2) : (renderMotionScale ? 1 : 0);
+        if (loggedRefW != mvRefW || loggedGuideW != mvGuideW || loggedWorkW != workWidth ||
+            loggedMode != motionMode)
         {
             loggedRefW = mvRefW;
             loggedGuideW = mvGuideW;
             loggedWorkW = workWidth;
-            LOG_INFO("DLSS-NR model motion scale {:.1f} x {:.1f}: game scale {} x {} measured against {}x{} ({}), "
-                     "motion texture {}x{} ({}), model {}x{}",
-                     frame.MvScaleX * mvToWorkX, frame.MvScaleY * mvToWorkY, frame.MvScaleX, frame.MvScaleY, mvRefW,
-                     mvRefH,
-                     !renderMotionScale                 ? "frame size, RenderMotionScale=false"
-                     : frame.MotionVectorsLowResolution ? "render size, low-resolution vectors"
-                                                        : "output size",
-                     mvGuideW, mvGuideH, matchedGuides ? "matched to the working size" : "the game's region", workWidth,
-                     workHeight);
+            loggedMode = motionMode;
+            if (spatial)
+            {
+                LOG_INFO("DLSS-NR model motion scale {:.1f} x {:.1f} before spatial packing: game scale {} x {} "
+                         "measured against {}x{} ({}), converted to NR frame {}x{}; packed model scale 1.0 x 1.0",
+                         spatialMvScaleX, spatialMvScaleY, frame.MvScaleX, frame.MvScaleY, mvRefW, mvRefH,
+                         !renderMotionScale                 ? "frame size, RenderMotionScale=false"
+                         : frame.MotionVectorsLowResolution ? "render size, low-resolution vectors"
+                                                            : "output size",
+                         width, height);
+            }
+            else
+            {
+                LOG_INFO("DLSS-NR model motion scale {:.1f} x {:.1f}: game scale {} x {} measured against {}x{} ({}), "
+                         "motion texture {}x{} ({}), model {}x{}",
+                         frame.MvScaleX * mvToWorkX, frame.MvScaleY * mvToWorkY, frame.MvScaleX, frame.MvScaleY,
+                         mvRefW, mvRefH,
+                         !renderMotionScale                 ? "frame size, RenderMotionScale=false"
+                         : frame.MotionVectorsLowResolution ? "render size, low-resolution vectors"
+                                                            : "output size",
+                         mvGuideW, mvGuideH, matchedGuides ? "matched to the working size" : "the game's region",
+                         workWidth, workHeight);
+            }
         }
     }
-
     ngxTime->Start(cmdList);
 
     // Count only a contiguous set of ready, separate feature histories. A failed extra creation never

@@ -331,11 +331,23 @@ bool ModelVk::Impl::Evaluate(VkCommandBuffer cmdBuffer, const VkImageInfo& colou
     // downsample makes the small one the model actually reads.
     ImageVk* modelInput = &state.proxy;
 
+    const bool renderMotionScale = cfg.DlssNrRenderMotionScale.value_or_default();
+    const uint32_t mvRefW = !renderMotionScale                 ? width
+                            : frame.MotionVectorsLowResolution ? renderWidth
+                                                               : outputWidth;
+    const uint32_t mvRefH = !renderMotionScale                 ? height
+                            : frame.MotionVectorsLowResolution ? renderHeight
+                                                               : outputHeight;
+    const float spatialMvScaleX =
+        frame.MvScaleX * (mvRefW ? (float) width / (float) mvRefW : 1.0f);
+    const float spatialMvScaleY =
+        frame.MvScaleY * (mvRefH ? (float) height / (float) mvRefH : 1.0f);
+
     if (spatial.active)
     {
         Transition(cmdBuffer, state.proxy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         Transition(cmdBuffer, state.spatialProxy, VK_IMAGE_LAYOUT_GENERAL);
-        auto constants = Spatial::MakeConstants(spatial, 100, guides, frame.MvScaleX, frame.MvScaleY, width, height);
+        auto constants = Spatial::MakeConstants(spatial, 100, guides, spatialMvScaleX, spatialMvScaleY, width, height);
         if (!state.pass->DispatchSpatial(cmdBuffer, constants, state.proxy.info.ImageView, VK_NULL_HANDLE,
                                          VK_NULL_HANDLE,
                                          state.spatialProxy.info.ImageView, VK_NULL_HANDLE))
@@ -347,7 +359,7 @@ bool ModelVk::Impl::Evaluate(VkCommandBuffer cmdBuffer, const VkImageInfo& colou
 
         Transition(cmdBuffer, state.spatialDepth, VK_IMAGE_LAYOUT_GENERAL);
         Transition(cmdBuffer, state.spatialMotion, VK_IMAGE_LAYOUT_GENERAL);
-        constants = Spatial::MakeConstants(spatial, 101, guides, frame.MvScaleX, frame.MvScaleY, width, height);
+        constants = Spatial::MakeConstants(spatial, 101, guides, spatialMvScaleX, spatialMvScaleY, width, height);
         if (!state.pass->DispatchSpatial(cmdBuffer, constants, VK_NULL_HANDLE, depthInfo.ImageView,
                                          motionInfo.ImageView,
                                          state.spatialDepth.info.ImageView, state.spatialMotion.info.ImageView,
@@ -497,15 +509,8 @@ bool ModelVk::Impl::Evaluate(VkCommandBuffer cmdBuffer, const VkImageInfo& colou
     // region otherwise (which makes that case the game's own scale). Same rule as the D3D12 path;
     // RenderMotionScale=false keeps the old working size / frame size conversion for an A/B.
     float mvX = frame.MvScaleX, mvY = frame.MvScaleY;
-    const bool renderMotionScale = cfg.DlssNrRenderMotionScale.value_or_default();
     const uint32_t mvGuideW = !renderMotionScale ? workWidth : matchedGuides ? workWidth : guides.motion.width;
     const uint32_t mvGuideH = !renderMotionScale ? workHeight : matchedGuides ? workHeight : guides.motion.height;
-    const uint32_t mvRefW = !renderMotionScale                 ? width
-                            : frame.MotionVectorsLowResolution ? renderWidth
-                                                               : outputWidth;
-    const uint32_t mvRefH = !renderMotionScale                 ? height
-                            : frame.MotionVectorsLowResolution ? renderHeight
-                                                               : outputHeight;
     if (spatial.active)
         mvX = mvY = 1.0f; // packed vectors already carry displacement in packed pixels
     else
@@ -689,7 +694,15 @@ bool ModelVk::Impl::Evaluate(VkCommandBuffer cmdBuffer, const VkImageInfo& colou
         reported = true;
         LOG_INFO("DLSS-NR Vulkan: running {} SR at {}x{}, guides {}x{}", beforeSr ? "before" : "after", width, height,
                  guideWidth, guideHeight);
-        if (!spatial.active)
+        if (spatial.active)
+            LOG_INFO("DLSS-NR Vulkan model motion scale {:.1f} x {:.1f} before spatial packing: game scale {} x {} "
+                     "measured against {}x{} ({}), converted to NR frame {}x{}; packed model scale 1.0 x 1.0",
+                     spatialMvScaleX, spatialMvScaleY, frame.MvScaleX, frame.MvScaleY, mvRefW, mvRefH,
+                     !renderMotionScale                 ? "frame size, RenderMotionScale=false"
+                     : frame.MotionVectorsLowResolution ? "render size, low-resolution vectors"
+                                                        : "output size",
+                     width, height);
+        else
             LOG_INFO("DLSS-NR Vulkan model motion scale {:.1f} x {:.1f}: game scale {} x {} measured against {}x{} "
                      "({}), motion texture {}x{} ({}), model {}x{}",
                      mvX, mvY, frame.MvScaleX, frame.MvScaleY, mvRefW, mvRefH,
