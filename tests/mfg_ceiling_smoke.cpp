@@ -167,9 +167,14 @@ int main()
         CHECK(changed == 1);
         CHECK(img.bytes[0x1100 + 1] == 3); // the compiled bound is untouched
 
-        // Already patched: refused, and the site is no longer found as a clamp.
+        // Already patched: refused as an original clamp, but explicitly recognised as an
+        // already-neutralised site. This is how a live module that survived a reference-count
+        // decrement is distinguished from an unknown new plugin generation.
         CHECK(ApplyCeilingPatch(site) == ApplyResult::Mismatch);
         CHECK(FindCeilingSite(img.data(), site) == FindResult::None);
+        CHECK(FindPatchedCeilingSite(img.data(), site) == FindResult::Found);
+        CHECK(site.address == img.bytes.data() + 0x1100);
+        CHECK(site.compiled == 3);
     }
     // An empty site never writes.
     {

@@ -51,7 +51,7 @@ enum class FindResult
 
 // Looks for the clamp in the executable sections of a mapped plugin. Only a compiled maximum of 1 to 8
 // generated frames counts, and the upper three bytes of the immediate must be zero.
-inline FindResult FindCeilingSite(void* image, CeilingSite& site)
+inline FindResult FindCeilingSiteWithModRm(void* image, CeilingSite& site, uint8_t expectedModRm)
 {
     site = {};
     size_t hits = 0;
@@ -73,7 +73,8 @@ inline FindResult FindCeilingSite(void* image, CeilingSite& site)
                                          if (p[1] == 0 || p[1] > 8)
                                              continue;
 
-                                         if (std::memcmp(p + 5, kClampTail, sizeof(kClampTail)) != 0)
+                                         if (std::memcmp(p + 5, kClampTail, sizeof(kClampTail) - 1) != 0 ||
+                                             p[kModRmOffset] != expectedModRm)
                                              continue;
 
                                          if (hits++ == 0)
@@ -100,6 +101,16 @@ inline FindResult FindCeilingSite(void* image, CeilingSite& site)
     }
 
     return FindResult::Found;
+}
+
+inline FindResult FindCeilingSite(void* image, CeilingSite& site)
+{
+    return FindCeilingSiteWithModRm(image, site, kModRmOriginal);
+}
+
+inline FindResult FindPatchedCeilingSite(void* image, CeilingSite& site)
+{
+    return FindCeilingSiteWithModRm(image, site, kModRmPatched);
 }
 
 enum class ApplyResult

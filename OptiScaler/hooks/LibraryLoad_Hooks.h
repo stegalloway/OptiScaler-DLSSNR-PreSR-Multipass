@@ -11,6 +11,7 @@ class LibraryLoadHooks
     static HMODULE LoadLibraryCheckA(std::string libName, LPCSTR lpLibFullPath);
     static HMODULE LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibFullPath);
     static std::optional<NTSTATUS> FreeLibrary(PVOID library);
+    static void NotifyLibraryUnloaded(PVOID library);
 
     static HMODULE LoadNvApi();
     // static HMODULE LoadFfxapiVk(std::wstring originalPath);

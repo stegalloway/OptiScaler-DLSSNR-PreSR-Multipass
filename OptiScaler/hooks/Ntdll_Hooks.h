@@ -173,7 +173,10 @@ class NtdllHooks
                 return result.value();
         }
 
-        return o_LdrUnloadDll(lpLibrary);
+        const auto result = o_LdrUnloadDll(lpLibrary);
+        if (result >= 0)
+            LibraryLoadHooks::NotifyLibraryUnloaded(lpLibrary);
+        return result;
     }
 
     VALIDATE_MEMBER_HOOK(hkRtlGetVersion, NtdllProxy::PFN_RtlGetVersion)

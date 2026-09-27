@@ -1,4 +1,3 @@
-#pragma once
 #define NOMINMAX
 #include <windows.h>
 #include <algorithm>
@@ -14,6 +13,7 @@
 
 #define LOG_INFO(...) ((void)0)
 #define LOG_WARN(...) ((void)0)
+#define LOG_DEBUG(...) ((void)0)
 struct TestOption
 {
     bool enabled = false;
@@ -42,6 +42,7 @@ struct Config
     TestInt FGDLSSGAdaQualityMode;
     TestInt FGDLSSGAdaMagnitudeThresholdPx { 64 };
     TestOption FGDLSSGAdaWarpBlend;
+    TestOption FGDLSSGDiagnostics;
     TestBoolOr DisableFlipMetering;
     static Config* Instance() { static Config config; return &config; }
 };

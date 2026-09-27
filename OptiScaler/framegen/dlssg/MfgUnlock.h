@@ -116,6 +116,8 @@ void ResetTelemetry();
 // put it. Its own frame-count clamp is neutralised once the snippet unlock has landed, so a wrapper
 // that cached 1 cannot lower the ceiling again. Ordinary threads and the load hook; never scans.
 void OnStreamlinePluginLoaded(HMODULE plugin);
+// Called after a real unload attempt; retires the generation only when the image is no longer mapped.
+void OnStreamlinePluginUnloaded(HMODULE plugin);
 
 // Whether the Streamline plugin was put on software frame pacing.
 bool SoftwarePacing();

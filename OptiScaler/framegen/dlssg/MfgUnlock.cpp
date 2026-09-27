@@ -117,6 +117,33 @@ uintptr_t UniqueAddress(HMODULE module, std::string_view pattern)
 
 // The module's own file version, for the report. A signature that does not match is expected on a
 // version nobody has looked at, and the version is the one thing that makes such a report actionable.
+bool ModulePeMetadata(HMODULE module, size_t& imageSize, DWORD& timestamp)
+{
+    imageSize = 0;
+    timestamp = 0;
+    if (!module)
+        return false;
+    __try
+    {
+        auto* base = reinterpret_cast<const uint8_t*>(module);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0)
+            return false;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+            return false;
+        imageSize = nt->OptionalHeader.SizeOfImage;
+        timestamp = nt->FileHeader.TimeDateStamp;
+        return imageSize != 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+uint64_t g_nextProviderGeneration = 0;
+
 std::string ModuleVersion(HMODULE module)
 {
     wchar_t path[MAX_PATH] {};
@@ -214,11 +241,37 @@ HMODULE FindRetainedProvider()
     return found;
 }
 
-// The Streamline DLSS-G plugins seen so far, and the ones already tried. A plugin is tried once: the
-// answer does not change, and a repeat would only repeat the log line.
-// Status, plugin discovery and patch application share g_mutex.
-std::vector<HMODULE> g_plugins;
-std::vector<HMODULE> g_pluginsTried;
+// Each Streamline DLSS-G plugin load is a generation. Unlike patched providers, plugins are not pinned
+// for process lifetime, so a later load can reuse the same HMODULE/base. Unload notification retires
+// the old generation; a reload is independently inspected and patched.
+struct PluginGeneration
+{
+    HMODULE module = nullptr;
+    uint64_t generation = 0;
+    bool ceilingTried = false;
+    const char* ceilingStatus = "";
+    const char* flipStatus = "";
+    unsigned int flipSites = 0;
+};
+
+std::vector<PluginGeneration> g_plugins;
+uint64_t g_nextPluginGeneration = 0;
+
+void RefreshPluginStatus()
+{
+    if (g_plugins.empty())
+    {
+        g_status.PluginCeiling = "";
+        g_status.FlipMetering = "";
+        g_status.FlipSites = 0;
+        return;
+    }
+
+    const auto& current = g_plugins.back();
+    g_status.PluginCeiling = current.ceilingStatus;
+    g_status.FlipMetering = current.flipStatus;
+    g_status.FlipSites = current.flipSites;
+}
 
 // Same guards as TryApply: the option on for this session, an Ada GPU.
 bool AdaUnlockWanted()
@@ -233,17 +286,17 @@ bool AdaUnlockWanted()
 // Software frame pacing: pin the plugin's flip-metering state to its own software fallback. Applied when
 // the plugin is loaded, before Streamline uses it, because rewriting a register store is a seven byte
 // write into code that no other thread should be executing yet. Caller holds g_mutex.
-void PatchFlipMetering(HMODULE plugin)
+void PatchFlipMetering(PluginGeneration& generation)
 {
+    auto plugin = generation.module;
     g_status.FlipRequested = Config::Instance()->FGDLSSGAdaFlipMeteringPatch.value_or_default();
-
-    if (std::string_view(g_status.FlipMetering) == "patched")
-        return;
 
     // A plugin has been seen; "off" tells the overlay that, and that nothing was asked of it.
     if (!g_status.FlipRequested)
     {
-        g_status.FlipMetering = "off";
+        generation.flipStatus = "off";
+        generation.flipSites = 0;
+        RefreshPluginStatus();
         return;
     }
 
@@ -256,29 +309,38 @@ void PatchFlipMetering(HMODULE plugin)
 
     if (found != MfgUnlock::Flip::FindResult::Found)
     {
-        g_status.FlipMetering = MfgUnlock::Flip::Describe(found);
-        LOG_WARN("MFG unlock: {}: software frame pacing not applied: {}", pluginPath, g_status.FlipMetering);
+        generation.flipStatus = MfgUnlock::Flip::Describe(found);
+        generation.flipSites = 0;
+        RefreshPluginStatus();
+        LOG_WARN("MFG unlock: plugin generation {} {}: software frame pacing not applied: {}",
+                 generation.generation, pluginPath, generation.flipStatus);
         return;
     }
 
     switch (MfgUnlock::Flip::Apply(plan))
     {
     case MfgUnlock::Flip::ApplyResult::Patched:
-        g_status.FlipMetering = "patched";
-        g_status.FlipSites = static_cast<unsigned int>(plan.sites.size());
-        LOG_INFO("MFG unlock: {}: flip-metering state +0x{:X} pinned to {} at {} site(s); multi-frame should pace in "
-                 "software",
-                 pluginPath, plan.field, plan.value, plan.sites.size());
+        generation.flipStatus = "patched";
+        generation.flipSites = static_cast<unsigned int>(plan.sites.size());
+        LOG_INFO("MFG unlock: plugin generation {} {}: flip-metering state +0x{:X} pinned to {} at {} site(s); "
+                 "multi-frame should pace in software",
+                 generation.generation, pluginPath, plan.field, plan.value, plan.sites.size());
         break;
     case MfgUnlock::Flip::ApplyResult::Mismatch:
-        g_status.FlipMetering = "the plugin changed while it was being patched";
-        LOG_WARN("MFG unlock: {}: software frame pacing not applied: {}", pluginPath, g_status.FlipMetering);
+        generation.flipStatus = "the plugin changed while it was being patched";
+        generation.flipSites = 0;
+        LOG_WARN("MFG unlock: plugin generation {} {}: software frame pacing not applied: {}",
+                 generation.generation, pluginPath, generation.flipStatus);
         break;
     case MfgUnlock::Flip::ApplyResult::ProtectFailed:
-        g_status.FlipMetering = "its memory could not be made writable";
-        LOG_WARN("MFG unlock: {}: software frame pacing not applied: {}", pluginPath, g_status.FlipMetering);
+        generation.flipStatus = "its memory could not be made writable";
+        generation.flipSites = 0;
+        LOG_WARN("MFG unlock: plugin generation {} {}: software frame pacing not applied: {}",
+                 generation.generation, pluginPath, generation.flipStatus);
         break;
     }
+
+    RefreshPluginStatus();
 }
 
 // Only once the snippet unlock has landed. Raising the plugin's ceiling while the snippet still answers
@@ -289,19 +351,17 @@ void PatchPluginCeilings()
     if (MfgUnlock::UnlockedMax() == 0)
         return;
 
-    for (HMODULE plugin : g_plugins)
+    for (auto& generation : g_plugins)
     {
-        if (std::find(g_pluginsTried.begin(), g_pluginsTried.end(), plugin) != g_pluginsTried.end())
+        if (generation.ceilingTried)
             continue;
 
-        g_pluginsTried.push_back(plugin);
+        generation.ceilingTried = true;
+        auto plugin = generation.module;
 
         wchar_t path[MAX_PATH] {};
         GetModuleFileNameW(plugin, path, MAX_PATH);
         const auto pluginPath = wstring_to_string(path);
-
-        // A plugin that was patched stays patched; a second one that cannot be does not change that.
-        const bool alreadyPatched = std::string_view(g_status.PluginCeiling) == "patched";
 
         MfgUnlock::Plugin::CeilingSite site;
         const char* result = "not matched";
@@ -313,31 +373,57 @@ void PatchPluginCeilings()
             {
             case MfgUnlock::Plugin::ApplyResult::Patched:
                 result = "patched";
-                LOG_INFO("MFG unlock: {}: frame-count clamp neutralised, compiled maximum {} generated frame(s)",
-                         pluginPath, site.compiled);
+                LOG_INFO("MFG unlock: plugin generation {} {}: frame-count clamp neutralised, compiled maximum {} "
+                         "generated frame(s)",
+                         generation.generation, pluginPath, site.compiled);
                 break;
             case MfgUnlock::Plugin::ApplyResult::ProtectFailed:
                 result = "not writable";
-                LOG_WARN("MFG unlock: {}: frame-count clamp found but its page could not be made writable", pluginPath);
+                LOG_WARN("MFG unlock: plugin generation {} {}: frame-count clamp found but its page could not be "
+                         "made writable",
+                         generation.generation, pluginPath);
                 break;
             case MfgUnlock::Plugin::ApplyResult::Mismatch:
-                LOG_WARN("MFG unlock: {}: frame-count clamp changed under us; left unchanged", pluginPath);
+                result = "changed during patch";
+                LOG_WARN("MFG unlock: plugin generation {} {}: frame-count clamp changed under us; left unchanged",
+                         generation.generation, pluginPath);
                 break;
             }
             break;
         case MfgUnlock::Plugin::FindResult::Ambiguous:
             result = "ambiguous";
-            LOG_WARN("MFG unlock: {}: more than one frame-count clamp; left unchanged", pluginPath);
+            LOG_WARN("MFG unlock: plugin generation {} {}: more than one frame-count clamp; left unchanged",
+                     generation.generation, pluginPath);
             break;
         case MfgUnlock::Plugin::FindResult::None:
+        {
+            MfgUnlock::Plugin::CeilingSite patched {};
+            if (MfgUnlock::Plugin::FindPatchedCeilingSite(plugin, patched) ==
+                MfgUnlock::Plugin::FindResult::Found)
+            {
+                result = "patched";
+                LOG_DEBUG("MFG unlock: plugin generation {} {}: frame-count clamp already neutralised",
+                          generation.generation, pluginPath);
+            }
+            else
+            {
+                LOG_WARN("MFG unlock: plugin generation {} {}: no frame-count clamp of the known shape; "
+                         "left unchanged",
+                         generation.generation, pluginPath);
+            }
+            break;
+        }
         case MfgUnlock::Plugin::FindResult::BadImage:
-            LOG_WARN("MFG unlock: {}: no frame-count clamp of the known shape; left unchanged", pluginPath);
+            result = "bad image";
+            LOG_WARN("MFG unlock: plugin generation {} {}: invalid plugin image; left unchanged",
+                     generation.generation, pluginPath);
             break;
         }
 
-        if (!alreadyPatched)
-            g_status.PluginCeiling = result;
+        generation.ceilingStatus = result;
     }
+
+    RefreshPluginStatus();
 }
 
 bool WriteBytes(uintptr_t address, const uint8_t* bytes, size_t count)
@@ -954,7 +1040,14 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
 
             wchar_t modulePath[MAX_PATH] {};
             GetModuleFileNameW(module, modulePath, MAX_PATH);
-            LOG_INFO("MFG unlock: DLSS-G provider {} at {}", g_status.SnippetVersion, wstring_to_string(modulePath));
+            size_t providerImageSize = 0;
+            DWORD providerTimestamp = 0;
+            ModulePeMetadata(module, providerImageSize, providerTimestamp);
+            [[maybe_unused]] const uint64_t providerGeneration = ++g_nextProviderGeneration;
+            LOG_INFO("MFG unlock: provider generation {} version {} path={} base=0x{:X} image_size={} "
+                     "timestamp=0x{:08X}",
+                     providerGeneration, g_status.SnippetVersion, wstring_to_string(modulePath),
+                     reinterpret_cast<uintptr_t>(module), providerImageSize, providerTimestamp);
 
             // Gates and the selected temporal method form one transaction. A
             // count-only unlock repeats frames, and a partly redirected PTX
@@ -1055,8 +1148,8 @@ void MfgUnlock::TryApply(HMODULE requestedModule)
                                           : method == TemporalMethod::Retarget
                                               ? "complete Blackwell retarget and gate transaction"
                                               : "complete PTX descriptor and gate transaction";
-            LOG_INFO("MFG unlock: nvngx_dlssg.dll patched for {} generated frames ({})", kMaxGeneratedFrames,
-                     g_status.TemporalDetail);
+            LOG_INFO("MFG unlock: provider generation {} patched for {} generated frames ({})",
+                     providerGeneration, kMaxGeneratedFrames, g_status.TemporalDetail);
             if (quality.mode != 0)
                 LOG_INFO("[MFGQUALITY] mode={} warp={} applied=true kernels={} provider={} detail={}",
                          quality.mode, g_status.QualityWarp, kernelCount, g_status.SnippetVersion,
@@ -1129,18 +1222,60 @@ void MfgUnlock::OnStreamlinePluginLoaded(HMODULE plugin)
     {
         std::lock_guard lock(g_mutex);
 
-        if (std::find(g_plugins.begin(), g_plugins.end(), plugin) == g_plugins.end())
+        auto existing = std::find_if(g_plugins.begin(), g_plugins.end(),
+                                     [&](const PluginGeneration& generation)
+                                     { return generation.module == plugin; });
+        if (existing == g_plugins.end())
         {
-            g_plugins.push_back(plugin);
+            PluginGeneration generation {};
+            generation.module = plugin;
+            generation.generation = ++g_nextPluginGeneration;
+            g_plugins.push_back(generation);
+
+            wchar_t path[MAX_PATH] {};
+            GetModuleFileNameW(plugin, path, MAX_PATH);
+            size_t imageSize = 0;
+            DWORD timestamp = 0;
+            ModulePeMetadata(plugin, imageSize, timestamp);
+            LOG_INFO("MFG unlock: plugin generation {} loaded path={} base=0x{:X} image_size={} timestamp=0x{:08X}",
+                     g_plugins.back().generation, wstring_to_string(path), reinterpret_cast<uintptr_t>(plugin),
+                     imageSize, timestamp);
 
             // At load, ahead of any use of the plugin.
-            PatchFlipMetering(plugin);
+            PatchFlipMetering(g_plugins.back());
         }
     }
 
     // A no-op until the snippet unlock has landed; TryApply calls it again then.
     PatchPluginCeilings();
 }
+
+void MfgUnlock::OnStreamlinePluginUnloaded(HMODULE plugin)
+{
+    if (plugin == nullptr)
+        return;
+
+    // This callback is made after the real loader unload call. If another reference keeps the
+    // image mapped, it is still the same live generation and must not be retired.
+    HMODULE stillMapped = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(plugin), &stillMapped))
+        return;
+
+    std::lock_guard lock(g_mutex);
+    const auto before = g_plugins.size();
+    std::erase_if(g_plugins, [&](const PluginGeneration& generation) { return generation.module == plugin; });
+    if (g_plugins.size() == before)
+        return;
+
+    if (Config::Instance()->FGDLSSGDiagnostics.value_or_default())
+        LOG_INFO("[FGDRIVERTRACE] kind=dlssg_plugin_unloaded base=0x{:X} live_generations={}",
+                 reinterpret_cast<uintptr_t>(plugin), g_plugins.size());
+
+    RefreshPluginStatus();
+}
+
 
 unsigned int MfgUnlock::UnlockedMax()
 {

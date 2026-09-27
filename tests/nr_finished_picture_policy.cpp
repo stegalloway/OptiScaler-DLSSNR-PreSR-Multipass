@@ -41,6 +41,7 @@ int main()
     // without a fresh evaluation is not ownership.
     assert(RuntimeDlssgPresentationOwnership(false, true, true));
     assert(!RuntimeDlssgPresentationOwnership(false, true, false));
+    assert(!RuntimeDlssgPresentationOwnership(false, false, true));
     assert(RuntimeDlssgPresentationOwnership(true, false, false));
 
     // D3D11 follows the same presentation-owner rule without requiring a D3D12 queue.

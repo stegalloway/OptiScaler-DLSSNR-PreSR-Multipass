@@ -715,6 +715,15 @@ std::optional<NTSTATUS> LibraryLoadHooks::FreeLibrary(PVOID lpLibrary)
     return result;
 }
 
+void LibraryLoadHooks::NotifyLibraryUnloaded(PVOID library)
+{
+#if defined(OPTISCALER_RTX40_MFG)
+    MfgUnlock::OnStreamlinePluginUnloaded(static_cast<HMODULE>(library));
+#else
+    (void) library;
+#endif
+}
+
 HMODULE LibraryLoadHooks::LoadNvApi()
 {
     LOG_FUNC();
