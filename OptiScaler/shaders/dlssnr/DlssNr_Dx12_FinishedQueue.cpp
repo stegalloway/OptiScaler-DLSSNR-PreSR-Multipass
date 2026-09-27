@@ -45,14 +45,25 @@ auto DlssNr_Dx12::State::WaitForFinishedPicture() -> bool
     if (!late.tracking.load())
         return true;
     std::lock_guard<std::recursive_mutex> lock(mutex);
-    if (pendingSubmissions) return false;
+    const bool diagnostics = Config::Instance()->FGDLSSGDiagnostics.value_or_default();
+    if (pendingSubmissions)
+    {
+        if (diagnostics)
+            LOG_INFO("[FGWAIT] kind=nr_finished_picture status=pending_submissions count={}", pendingSubmissions);
+        return false;
+    }
     late.Cancel();
     for (auto& slot : late.slots)
     {
         // Do not wait for game-owned recording resets or unfinished replay queues.
         // In particular, the original ready/done signal cannot prove a replay finished.
         if (!slot.producerLifetime.Idle())
+        {
+            if (diagnostics)
+                LOG_INFO("[FGWAIT] kind=nr_finished_picture status=producer_recording serial={} pending_submissions={}",
+                         slot.serial, slot.pendingSubmissions);
             return false;
+        }
         if (!slot.submitted || late.Finished(slot))
             continue;
         if (slot.fence->GetCompletedValue() == UINT64_MAX)
@@ -60,8 +71,18 @@ auto DlssNr_Dx12::State::WaitForFinishedPicture() -> bool
         HANDLE event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!event)
             return false;
+        const auto completedBefore = slot.fence->GetCompletedValue();
+        const uint64_t waitStarted = GetTickCount64();
         const auto hr = slot.fence->SetEventOnCompletion(slot.done, event);
-        const bool finished = SUCCEEDED(hr) && WaitForSingleObject(event, 5000) == WAIT_OBJECT_0;
+        const DWORD waitResult = SUCCEEDED(hr) ? WaitForSingleObject(event, 5000) : WAIT_FAILED;
+        const uint64_t elapsedMs = GetTickCount64() - waitStarted;
+        const bool finished = SUCCEEDED(hr) && waitResult == WAIT_OBJECT_0;
+        const auto completedAfter = slot.fence->GetCompletedValue();
+        if (diagnostics || !finished)
+            LOG_INFO("[FGWAIT] kind=nr_finished_picture status=fence_wait serial={} ready={} done={} "
+                     "completed_before={} completed_after={} elapsed_ms={} hr=0x{:08X} wait_result=0x{:X}",
+                     slot.serial, slot.ready, slot.done, completedBefore, completedAfter, elapsedMs,
+                     static_cast<unsigned>(hr), waitResult);
         CloseHandle(event);
         if (!finished || !late.Finished(slot))
             return false;

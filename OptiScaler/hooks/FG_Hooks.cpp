@@ -36,16 +36,18 @@ static HANDLE _semaphore = nullptr;
 inline static std::vector<void*> oldBackBuffers;
 #endif
 
-static bool WaitForQueueIdle(ID3D12CommandQueue* queue, ID3D12Fence* fence, HANDLE fenceEvent, UINT64& fenceValue)
+static bool WaitForQueueIdle(ID3D12CommandQueue* queue, ID3D12Fence* fence, HANDLE fenceEvent, UINT64& fenceValue,
+                             const char* reason)
 {
     if (queue == nullptr || fence == nullptr || fenceEvent == nullptr)
         return true;
 
     const UINT64 waitValue = ++fenceValue;
+    const uint64_t waitStarted = GetTickCount64();
     auto result = queue->Signal(fence, waitValue);
     if (FAILED(result))
     {
-        LOG_ERROR("FG/present queue idle Signal failed: {:X}", (UINT) result);
+        LOG_ERROR("FG/present queue idle Signal failed: {:X}, reason={}", (UINT) result, reason);
         return false;
     }
 
@@ -55,16 +57,20 @@ static bool WaitForQueueIdle(ID3D12CommandQueue* queue, ID3D12Fence* fence, HAND
     result = fence->SetEventOnCompletion(waitValue, fenceEvent);
     if (FAILED(result))
     {
-        LOG_ERROR("FG/present queue idle SetEventOnCompletion failed. fence {}, completed {}, result {:X}", waitValue,
-                  fence->GetCompletedValue(), (UINT) result);
+        LOG_ERROR("FG/present queue idle SetEventOnCompletion failed. fence {}, completed {}, result {:X}, reason={}",
+                  waitValue, fence->GetCompletedValue(), (UINT) result, reason);
         return false;
     }
 
     const auto waitResult = WaitForSingleObject(fenceEvent, 5000);
+    const uint64_t elapsedMs = GetTickCount64() - waitStarted;
+    if (Config::Instance()->FGDLSSGDiagnostics.value_or_default())
+        LOG_INFO("[FGWAIT] kind=fg_queue_idle reason={} fence={} completed={} elapsed_ms={} wait_result=0x{:X}",
+                 reason, waitValue, fence->GetCompletedValue(), elapsedMs, waitResult);
     if (waitResult != WAIT_OBJECT_0)
     {
-        LOG_ERROR("FG/present queue idle wait failed. fence {}, completed {}, waitResult {:X}", waitValue,
-                  fence->GetCompletedValue(), waitResult);
+        LOG_ERROR("FG/present queue idle wait failed. fence {}, completed {}, waitResult {:X}, elapsed {} ms, reason={}",
+                  waitValue, fence->GetCompletedValue(), waitResult, elapsedMs, reason);
         return false;
     }
 
@@ -197,7 +203,7 @@ HRESULT FGHooks::CreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice, DXGI
 
                 resizeFenceValue++;
                 const auto waitResult = WaitForQueueIdle(State::Instance().currentCommandQueue, resizeFence,
-                                                         resizeFenceEvent, resizeFenceValue);
+                                                         resizeFenceEvent, resizeFenceValue, __FUNCTION__);
 
                 LOG_DEBUG("WaitForSingleObject result: {}", waitResult);
             }
@@ -304,7 +310,7 @@ HRESULT FGHooks::CreateSwapChainForHwnd(IDXGIFactory* pFactory, IUnknown* pDevic
 
                 resizeFenceValue++;
                 const auto waitResult = WaitForQueueIdle(State::Instance().currentCommandQueue, resizeFence,
-                                                         resizeFenceEvent, resizeFenceValue);
+                                                         resizeFenceEvent, resizeFenceValue, __FUNCTION__);
 
                 LOG_DEBUG("WaitForSingleObject result: {}", waitResult);
             }
@@ -628,7 +634,7 @@ HRESULT FGHooks::hkResizeBuffers(IDXGISwapChain* This, UINT BufferCount, UINT Wi
 
         resizeFenceValue++;
         const auto waitResult =
-            WaitForQueueIdle(State::Instance().currentCommandQueue, resizeFence, resizeFenceEvent, resizeFenceValue);
+            WaitForQueueIdle(State::Instance().currentCommandQueue, resizeFence, resizeFenceEvent, resizeFenceValue, __FUNCTION__);
 
         LOG_DEBUG("WaitForSingleObject result: {}", waitResult);
     }
@@ -869,7 +875,7 @@ HRESULT FGHooks::hkResizeBuffers1(IDXGISwapChain3* This, UINT BufferCount, UINT 
 
         resizeFenceValue++;
         const auto waitResult =
-            WaitForQueueIdle(State::Instance().currentCommandQueue, resizeFence, resizeFenceEvent, resizeFenceValue);
+            WaitForQueueIdle(State::Instance().currentCommandQueue, resizeFence, resizeFenceEvent, resizeFenceValue, __FUNCTION__);
 
         LOG_DEBUG("WaitForSingleObject result: {}", waitResult);
     }
@@ -1416,7 +1422,7 @@ ULONG FGHooks::hkFGRelease(IUnknown* This)
 
                 resizeFenceValue++;
                 const auto waitResult = WaitForQueueIdle(State::Instance().currentCommandQueue, resizeFence,
-                                                         resizeFenceEvent, resizeFenceValue);
+                                                         resizeFenceEvent, resizeFenceValue, __FUNCTION__);
 
                 LOG_DEBUG("WaitForSingleObject result: {}", waitResult);
             }

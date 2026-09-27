@@ -35,6 +35,22 @@ inline constexpr bool DlssgPresentationOwnership(bool optionsObserved,
     return optionsObserved ? optionsActive : freshEvaluationOwnership;
 }
 
+// A direct NVNGX replacement can coexist with a separately observed Streamline
+// feature state. Only a fresh successful direct evaluation counts as ownership;
+// provider selection alone is configuration, not runtime activity.
+inline constexpr bool RuntimeDlssgPresentationOwnership(bool streamlineOwnership,
+                                                        bool directNvngxProvider,
+                                                        bool freshDirectEvaluation)
+{
+    return streamlineOwnership || (directNvngxProvider && freshDirectEvaluation);
+}
+
+inline constexpr bool AllowWrappedPictureDx11(bool fgExists, bool fgActive, bool fgPaused,
+                                              bool runtimeDlssgOwnership)
+{
+    return !runtimeDlssgOwnership && (!fgExists || !fgActive || fgPaused);
+}
+
 // Ordinary wrapped Present is not the pre-FG handoff. Internal active FG and
 // XeFG's app-facing picture have their own ordered call sites. Native/external
 // DLSS-G is suppressed here only while runtime presentation ownership is active.

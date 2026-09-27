@@ -191,10 +191,6 @@ const GUID IID_IUnwrappedDXGISwapChain = {
     0xe8a33b4a, 0x1405, 0x424c, { 0xae, 0x88, 0xd, 0x3e, 0x9d, 0x46, 0xc9, 0x14 }
 };
 
-static ID3D12Fence* resizeFence = nullptr;
-static UINT64 resizeFenceValue = 0;
-static HANDLE resizeFenceEvent = nullptr;
-
 static void UpdateOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace)
 {
     auto& state = State::Instance();
@@ -313,54 +309,6 @@ static void UpdateOutputColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace)
              magic_enum::enum_name(info.dxgiColorSpace), magic_enum::enum_name(info.transfer),
              magic_enum::enum_name(info.primaries), magic_enum::enum_name(info.range),
              magic_enum::enum_name(info.model), info.valid);
-}
-
-static void WaitForGPUIdle(IUnknown* object)
-{
-    if (State::Instance().currentD3D12Device == nullptr || object == nullptr)
-        return;
-
-    ID3D12CommandQueue* queue = nullptr;
-
-    if (object->QueryInterface(IID_PPV_ARGS(&queue)) == S_OK)
-    {
-        LOG_DEBUG("Command queue obtained for GPU idle wait");
-        queue->Release();
-    }
-
-    if (queue != nullptr && resizeFence != nullptr && resizeFenceEvent != nullptr)
-    {
-        if (State::Instance().currentD3D12Device != nullptr)
-        {
-            if (resizeFence != nullptr)
-            {
-                resizeFence->Release();
-                resizeFence = nullptr;
-            }
-
-            if (resizeFenceEvent != nullptr)
-            {
-                CloseHandle(resizeFenceEvent);
-                resizeFenceEvent = nullptr;
-            }
-
-            State::Instance().currentD3D12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&resizeFence));
-            resizeFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-        }
-
-        LOG_DEBUG("Waiting for GPU to finish before resizing buffers");
-
-        resizeFenceValue++;
-        queue->Signal(resizeFence, resizeFenceValue);
-
-        if (resizeFence->GetCompletedValue() < resizeFenceValue)
-        {
-            resizeFence->SetEventOnCompletion(resizeFenceValue, resizeFenceEvent);
-            // Max 5 sec
-            auto waitResult = WaitForSingleObject(resizeFenceEvent, 5000);
-            LOG_DEBUG("WaitForSingleObject result: {:X}", waitResult);
-        }
-    }
 }
 
 #ifdef DXGI_DEBUG_ENABLED
@@ -670,12 +618,18 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             fgState.dlssgOptionsGeneratedFrames.load(std::memory_order_relaxed);
         const bool featureStateObserved = StreamlineHooks::hasDlssgFeatureState();
         const bool featureEnabled = StreamlineHooks::isDlssgFeatureEnabled();
-        const bool dlssgPresentationOwnership = DlssNr::FinishedPicturePolicy::DlssgPresentationOwnership(
+        const bool streamlineDlssgOwnership = DlssNr::FinishedPicturePolicy::DlssgPresentationOwnership(
             optionsObserved, optionsActive, featureStateObserved, featureEnabled,
             fallbackFreshEvaluationOwnership);
+        const bool directNvngxProvider = fgState.activeFgNvngx != FGNvngxReplacement::None;
+        const bool dlssgPresentationOwnership = DlssNr::FinishedPicturePolicy::RuntimeDlssgPresentationOwnership(
+            streamlineDlssgOwnership, directNvngxProvider, fallbackFreshEvaluationOwnership);
         const bool allowWrappedPicture = DlssNr::FinishedPicturePolicy::AllowWrappedPicture(
             cq != nullptr, xeFgGamePicture, fg != nullptr,
             fg != nullptr && fg->IsActive(), fg != nullptr && fg->IsPaused(), dlssgPresentationOwnership);
+        const bool allowDx11WrappedPicture = DlssNr::FinishedPicturePolicy::AllowWrappedPictureDx11(
+            fg != nullptr, fg != nullptr && fg->IsActive(), fg != nullptr && fg->IsPaused(),
+            dlssgPresentationOwnership);
 
         // Transition-only diagnostic. Feature load/unload is authoritative once
         // Streamline reports it; options seed state before that, and direct NGX
@@ -684,8 +638,11 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         const int ownershipState = dlssgPresentationOwnership ? 1 : 0;
         if (lastDlssgOwnership.exchange(ownershipState, std::memory_order_relaxed) != ownershipState)
         {
-            const char* ownershipSource = featureStateObserved ? "feature_state"
-                                         : (optionsObserved ? "streamline_options" : "evaluation_fallback");
+            const char* ownershipSource =
+                directNvngxProvider && fallbackFreshEvaluationOwnership ? "direct_nvngx_evaluation"
+                : featureStateObserved                                  ? "feature_state"
+                : optionsObserved                                       ? "streamline_options"
+                                                                        : "evaluation_fallback";
             LOG_INFO("DLSS-NR ownership transition: dlssg={} source={} wrapped_finished={} feature_enabled={} "
                      "options_generated={} eval_generated={} eval_epoch={} present_epoch={}",
                      dlssgPresentationOwnership, ownershipSource, allowWrappedPicture, featureEnabled,
@@ -695,7 +652,8 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
         if (allowWrappedPicture)
             DlssNr::ApplyToFinishedPicture(pSwapChain, cq);
-        else if (isD3D11 && State::Instance().swapchainInteropApi == SwapchainInteropApi::None)
+        else if (isD3D11 && State::Instance().swapchainInteropApi == SwapchainInteropApi::None &&
+                 allowDx11WrappedPicture)
             DlssNr::ApplyToFinishedPictureDx11(pSwapChain);
 
         // Draw overlay
@@ -1157,8 +1115,6 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers(UINT BufferCount
     LOG_DEBUG("BufferCount: {0}, Width: {1}, Height: {2}, NewFormat: {3}, SwapChainFlags: {4:X}", BufferCount, Width,
               Height, (UINT) NewFormat, SwapChainFlags);
 
-    WaitForGPUIdle(_device);
-
     // Release swapchain backbuffers to prevent errors when resizing
     /*
 
@@ -1602,8 +1558,6 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::ResizeBuffers1(UINT BufferCoun
 
     LOG_DEBUG("BufferCount: {}, Width: {}, Height: {}, NewFormat: {}, SwapChainFlags: {:X}", BufferCount, Width, Height,
               (UINT) Format, SwapChainFlags);
-
-    WaitForGPUIdle(_device);
 
     // Release swapchain backbuffers to prevent errors when resizing
     const bool isUsingOptiFgFeature =

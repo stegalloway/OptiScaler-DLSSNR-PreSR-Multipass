@@ -36,6 +36,19 @@ int main()
     assert(DlssgPresentationOwnership(false, false, false, false, true));
     assert(!DlssgPresentationOwnership(false, false, false, false, false));
 
+    // A live direct-NVNGX evaluation remains authoritative even if an unrelated
+    // Streamline feature-state observation says unloaded. Provider selection
+    // without a fresh evaluation is not ownership.
+    assert(RuntimeDlssgPresentationOwnership(false, true, true));
+    assert(!RuntimeDlssgPresentationOwnership(false, true, false));
+    assert(RuntimeDlssgPresentationOwnership(true, false, false));
+
+    // D3D11 follows the same presentation-owner rule without requiring a D3D12 queue.
+    assert(AllowWrappedPictureDx11(false, false, false, false));
+    assert(!AllowWrappedPictureDx11(false, false, false, true));
+    assert(!AllowWrappedPictureDx11(true, true, false, false));
+    assert(AllowWrappedPictureDx11(true, true, true, false));
+
     // Normal non-FG path remains eligible.
     assert(AllowWrappedPicture(true, false, false, false, false, false));
 
