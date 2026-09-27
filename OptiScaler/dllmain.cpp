@@ -29,6 +29,7 @@
 #include <fsr4/FSR4ModelSelection.h>
 
 #include <hooks/Dxgi_Hooks.h>
+#include <hooks/Rdr2PureDark.h>
 #include <hooks/D3D11_Hooks.h>
 #include <hooks/D3D12_Hooks.h>
 #include <hooks/Vulkan_Hooks.h>
@@ -1867,6 +1868,25 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         spdlog::info("Pre-release build, disabling update checks");
         Config::Instance()->CheckForUpdate.set_volatile_value(false);
 #endif
+
+        if (IsRdr2PureDarkCoexistence())
+        {
+            auto* cfg = Config::Instance();
+            cfg->FGEnabled.set_volatile_value(false);
+            cfg->FGInput.set_volatile_value(FGInput::NoFG);
+            cfg->FGOutput.set_volatile_value(FGOutput::NoFG);
+            cfg->FGNvngxReplacement.set_volatile_value(FGNvngxReplacement::None);
+            cfg->StreamlineSpoofing.set_volatile_value(false);
+            cfg->DxgiSpoofing.set_volatile_value(false);
+            cfg->UseFakenvapi.set_volatile_value(false);
+
+#if defined(OPTISCALER_RTX40_MFG)
+            LOG_INFO("RDR2 PureDark coexistence: built-in RTX40 MFG unlock is {}",
+                     cfg->FGDLSSGAdaMfgUnlock.value_or_default() ? "enabled" : "disabled");
+#endif
+            LOG_INFO("RDR2 PureDark coexistence: PureDark owns DXGI/Streamline/Reflex/presentation/FG; "
+                     "OptiScaler keeps NGX SR/NR and device-level D3D12 hooks");
+        }
 
         // Initial state of FG
         State::Instance().activeFgInput = Config::Instance()->FGInput.value_or_default();

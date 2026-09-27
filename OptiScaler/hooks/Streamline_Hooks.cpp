@@ -1,6 +1,7 @@
 #include <pch.h>
 
 #include "Streamline_Hooks.h"
+#include "Rdr2PureDark.h"
 #include "DlssgOptionsForwarding.h"
 #if defined(OPTISCALER_RTX40_MFG)
 #include <framegen/dlssg/MfgUnlock.h>
@@ -292,6 +293,17 @@ void RecomputeHdrUiSnapshot(MfgHdrUiDiagnostics::Snapshot& snapshot)
     snapshot.issues = issues;
 }
 } // namespace
+
+static bool IsRdr2PureDark() { return IsRdr2PureDarkCoexistence(); }
+
+static bool IsRdr2PureDarkMfgBridge()
+{
+#if defined(OPTISCALER_RTX40_MFG)
+    return IsRdr2PureDark() && Config::Instance()->FGDLSSGAdaMfgUnlock.value_or_default();
+#else
+    return false;
+#endif
+}
 
 static bool IsSL1AndDLSSGActive()
 {
@@ -1580,14 +1592,17 @@ bool StreamlineHooks::hkcommon_slOnPluginLoad(sl::param::IParameters* params, co
 
 sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options)
 {
-    observeMfgHdrUiOptions(viewport, options);
+    const bool rdr2PureDark = IsRdr2PureDark();
+    if (!rdr2PureDark)
+        observeMfgHdrUiOptions(viewport, options);
 
     // Initialise scalar intent when the game first submits FG options, rather
     // than during interposer setup before swap-chain creation.
     initializeDlssgOptions();
     // Establish API ownership before entering Streamline. Its downstream NGX
     // evaluations must not independently apply a still-pending UI multiplier.
-    gameDlssgOptionsObserved.store(true, std::memory_order_release);
+    if (!rdr2PureDark)
+        gameDlssgOptionsObserved.store(true, std::memory_order_release);
 #if defined(OPTISCALER_RTX40_MFG)
     MfgUnlock::TryApply();
     if (MfgUnlock::LastFailure() == MfgUnlock::Failure::RollbackFailed)
@@ -1617,7 +1632,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         MfgUnlock::RecordSetOptions(options.numFramesToGenerate, options.numFramesToGenerate,
                                    options.mode != sl::DLSSGMode::eOff, static_cast<unsigned>(result));
 #endif
-        if (result == sl::Result::eOk && options.structVersion > 5)
+        if (!rdr2PureDark && result == sl::Result::eOk && options.structVersion > 5)
         {
             auto& state = State::Instance();
             const bool active = options.mode != sl::DLSSGMode::eOff && options.numFramesToGenerate > 0;
@@ -1661,13 +1676,16 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 #endif
         if (result == sl::Result::eOk)
         {
-            const bool active = newOptions.mode != sl::DLSSGMode::eOff && newOptions.numFramesToGenerate > 0;
-            state.dlssgLastSetMode = newOptions.mode;
-            state.dlssgOptionsGeneratedFrames.store(active ? static_cast<int>(newOptions.numFramesToGenerate) : 0,
-                                                    std::memory_order_relaxed);
-            state.dlssgOptionsActive.store(active, std::memory_order_relaxed);
-            state.dlssgOptionsObserved.store(true, std::memory_order_release);
-            ReflexHooks::setDlssgFrameCount(active ? newOptions.numFramesToGenerate : 0);
+            if (!rdr2PureDark)
+            {
+                const bool active = newOptions.mode != sl::DLSSGMode::eOff && newOptions.numFramesToGenerate > 0;
+                state.dlssgLastSetMode = newOptions.mode;
+                state.dlssgOptionsGeneratedFrames.store(active ? static_cast<int>(newOptions.numFramesToGenerate) : 0,
+                                                        std::memory_order_relaxed);
+                state.dlssgOptionsActive.store(active, std::memory_order_relaxed);
+                state.dlssgOptionsObserved.store(true, std::memory_order_release);
+                ReflexHooks::setDlssgFrameCount(active ? newOptions.numFramesToGenerate : 0);
+            }
             // The runtime can accept native/safety options while individual UI
             // overrides remain unapplied. Acknowledge only a fully applied request.
             const bool requestedActive =
@@ -1702,14 +1720,15 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
     }
 
     // Make DLSSG auto always mean On
-    if (newOptions.mode == sl::DLSSGMode::eAuto)
+    if (!rdr2PureDark && newOptions.mode == sl::DLSSGMode::eAuto)
         newOptions.mode = sl::DLSSGMode::eOn;
 
     const auto dlssgPotentiallyActive = newOptions.mode == sl::DLSSGMode::eOn ||
                                         newOptions.mode == sl::DLSSGMode::eAuto ||
                                         newOptions.mode == sl::DLSSGMode::eDynamic;
 
-    bool enableDynamicMode = requested.values.forceDynamic && state.dlssgGameDMFGSupported && dlssgPotentiallyActive;
+    bool enableDynamicMode =
+        !rdr2PureDark && requested.values.forceDynamic && state.dlssgGameDMFGSupported && dlssgPotentiallyActive;
 
     if (enableDynamicMode)
     {
@@ -1719,18 +1738,32 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
 
     // v5 can retain a target while On/Off without enabling Dynamic. Older callers
     // keep their ABI; a target-only edit waits for a call that can represent it.
-    if (newOptions.structVersion >= 5 && requested.values.dynamicTarget.has_value())
+    if (!rdr2PureDark && newOptions.structVersion >= 5 && requested.values.dynamicTarget.has_value())
     {
         newOptions.dynamicTargetFrameRate = requested.values.dynamicTarget.value();
         targetOverrideApplied = true;
     }
 
-    applyMenuDlssgInterlock(newOptions, dlssgPotentiallyActive);
+    if (!rdr2PureDark)
+        applyMenuDlssgInterlock(newOptions, dlssgPotentiallyActive);
 
     LOG_TRACE("DLSSG Modified Mode: {}", magic_enum::enum_name(newOptions.mode));
 
-    if (dlssgPotentiallyActive && state.streamlineVersion >= feature_version { 2, 7, 1 })
+    const bool rdr2PureDarkMfgBridge = IsRdr2PureDarkMfgBridge();
+    const bool streamlineSupportsMfg = state.streamlineVersion >= feature_version { 2, 7, 1 };
+
+    if (dlssgPotentiallyActive && (streamlineSupportsMfg || rdr2PureDarkMfgBridge))
     {
+        if (rdr2PureDarkMfgBridge && !streamlineSupportsMfg)
+        {
+            static bool loggedRdr2VersionBypass = false;
+            if (!loggedRdr2VersionBypass)
+            {
+                loggedRdr2VersionBypass = true;
+                LOG_INFO("RDR2 PureDark MFG bridge: bypassing stale Streamline {}.{}.{} version gate",
+                         state.streamlineVersion.major, state.streamlineVersion.minor, state.streamlineVersion.patch);
+            }
+        }
 #if defined(OPTISCALER_RTX40_MFG)
         state.dlssgMfgMax = static_cast<int>(MfgUnlock::EffectiveMax(
             static_cast<unsigned int>(std::max(1, state.dlssgMfgMax.value_or(1)))));
@@ -1769,7 +1802,8 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         }
     }
 
-    applyMfgHdrUiAutomaticHandling(newOptions);
+    if (!rdr2PureDark)
+        applyMfgHdrUiAutomaticHandling(newOptions);
     return submitOptions();
 }
 
@@ -1816,7 +1850,8 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
                 newState.lastPresentInputsProcessingCompletionFenceValue;
         }
 
-        State::Instance().dlssgGameDMFGSupported = newState.bIsDynamicMFGSupported == sl::eTrue;
+        if (!IsRdr2PureDark())
+            State::Instance().dlssgGameDMFGSupported = newState.bIsDynamicMFGSupported == sl::eTrue;
     }
     else
     {
@@ -1827,7 +1862,8 @@ sl::Result StreamlineHooks::hkslDLSSGGetState(const sl::ViewportHandle& viewport
 #if defined(OPTISCALER_RTX40_MFG)
         MfgUnlock::RecordState(state.numFramesActuallyPresented);
 #endif
-        State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
+        if (!IsRdr2PureDark())
+            State::Instance().dlssgGameDMFGSupported = state.bIsDynamicMFGSupported == sl::eTrue;
     }
 
 #if defined(OPTISCALER_RTX40_MFG)
@@ -2040,6 +2076,25 @@ void* StreamlineHooks::hkdlss_slGetPluginFunction(const char* functionName)
 
 void* StreamlineHooks::hkdlssg_slGetPluginFunction(const char* functionName)
 {
+    if (IsRdr2PureDark())
+    {
+        if (strcmp(functionName, "slDLSSGSetOptions") == 0)
+        {
+            o_slDLSSGSetOptions = (decltype(&slDLSSGSetOptions)) o_dlssg_slGetPluginFunction(functionName);
+            LOG_INFO("RDR2 PureDark MFG bridge: intercepting slDLSSGSetOptions");
+            return o_slDLSSGSetOptions ? &hkslDLSSGSetOptions : nullptr;
+        }
+
+        if (strcmp(functionName, "slDLSSGGetState") == 0)
+        {
+            o_slDLSSGGetState = (decltype(&slDLSSGGetState)) o_dlssg_slGetPluginFunction(functionName);
+            LOG_INFO("RDR2 PureDark MFG bridge: intercepting slDLSSGGetState");
+            return o_slDLSSGGetState ? &hkslDLSSGGetState : nullptr;
+        }
+
+        return o_dlssg_slGetPluginFunction(functionName);
+    }
+
     if (auto* hook = DlssNr::StreamlinePicture::Wrap(functionName, o_dlssg_slGetPluginFunction))
         return hook;
     // LOG_DEBUG("{}", functionName);
@@ -2482,6 +2537,12 @@ void StreamlineHooks::unhookInterposer()
 // Call it just after sl.interposer's load or if sl.interposer is already loaded
 void StreamlineHooks::hookInterposer(HMODULE slInterposer)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline interposer native");
+        return;
+    }
+
     LOG_FUNC();
 
     if (!slInterposer)
@@ -2703,6 +2764,12 @@ void StreamlineHooks::unhookDlss()
 
 void StreamlineHooks::hookDlss(HMODULE slDlss)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline DLSS native");
+        return;
+    }
+
     LOG_FUNC();
 
     if (!slDlss)
@@ -3035,6 +3102,12 @@ void StreamlineHooks::unhookLocalDlssg()
 
 void StreamlineHooks::hookLocalDlssg(HMODULE slDlssg)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving local Streamline DLSS-G native");
+        return;
+    }
+
     LOG_FUNC();
 
     if (!slDlssg)
@@ -3086,6 +3159,12 @@ void StreamlineHooks::unhookReflex()
 
 void StreamlineHooks::hookReflex(HMODULE slReflex)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline Reflex native");
+        return;
+    }
+
     LOG_FUNC();
 
     if (!slReflex)
@@ -3142,6 +3221,12 @@ void StreamlineHooks::unhookPcl()
 
 void StreamlineHooks::hookPcl(HMODULE slPcl)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline PCL native");
+        return;
+    }
+
     LOG_FUNC();
 
     if (!slPcl)
@@ -3200,6 +3285,12 @@ void StreamlineHooks::unhookCommon()
 
 void StreamlineHooks::hookCommon(HMODULE slCommon)
 {
+    if (IsRdr2PureDark())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: leaving Streamline common native");
+        return;
+    }
+
     LOG_FUNC();
 
     if (!slCommon)

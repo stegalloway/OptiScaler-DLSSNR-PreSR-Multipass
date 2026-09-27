@@ -19,6 +19,7 @@
 #include <imgui/ImGuiNotify.hpp>
 
 #include <hooks/D3D12_Hooks.h>
+#include <hooks/Rdr2PureDark.h>
 #include <hooks/Streamline_Hooks.h>
 #include <framegen/dlssg/MfgUnlock.h>
 #include <framegen/dlssg/DlssgEvaluationCountPolicy.h>
@@ -53,6 +54,10 @@ static int ResolveDlssgEvaluationMaximum(const std::optional<int>& nativeMaximum
 static bool ShouldApplyDlssgEvaluationOverride(bool gameDlssgOptionsObserved, FGInput activeInput,
                                                FGOutput activeOutput)
 {
+    // PureDark owns RDR2 DLSS-G evaluation/count ordering. Its narrow Streamline
+    // bridge applies the count once at SetOptions; never rewrite the provider call again here.
+    if (IsRdr2PureDarkCoexistence())
+        return false;
     return !gameDlssgOptionsObserved && activeInput != FGInput::DLSSG && activeOutput != FGOutput::DLSSG;
 }
 

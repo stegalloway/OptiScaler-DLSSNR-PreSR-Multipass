@@ -2,6 +2,7 @@
 #include "Dxgi_Hooks.h"
 
 #include "DxgiFactory_Hooks.h"
+#include "Rdr2PureDark.h"
 
 #include <proxies/Dxgi_Proxy.h>
 #include <proxies/D3D12_Proxy.h>
@@ -278,6 +279,12 @@ inline static HRESULT hkCreateDXGIFactory2(UINT Flags, REFIID riid, IDXGIFactory
 
 void DxgiHooks::Hook()
 {
+    if (IsRdr2PureDarkCoexistence())
+    {
+        LOG_INFO("RDR2 PureDark coexistence: skipping global DXGI hook");
+        return;
+    }
+
     std::lock_guard<std::mutex> lock(hookMutex);
 
     // If not spoofing and
