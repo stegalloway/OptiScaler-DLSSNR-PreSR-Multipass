@@ -180,10 +180,16 @@ void StreamlineHooks::observeDlssgFeatureStateMessage(const char* msg)
 
     const bool wasObserved = dlssgFeatureStateObserved.load(std::memory_order_acquire);
     const bool wasEnabled = dlssgFeatureEnabled.exchange(enabled, std::memory_order_relaxed);
+
+    // A full feature unload leaves Streamline's 6X swapchain latency at 6 in
+    // Miles. Defer the DXGI reset to OptiScaler's next ordinary Present so no
+    // swapchain call is made from this Streamline logging thread. A reload
+    // before that Present cancels the stale reset.
+    dlssgLatencyResetPending.store(!enabled, std::memory_order_release);
     dlssgFeatureStateObserved.store(true, std::memory_order_release);
 
     if (!wasObserved || wasEnabled != enabled)
-        LOG_INFO("DLSS-G feature state: enabled={}", enabled);
+        LOG_INFO("DLSS-G feature state: enabled={} latency_reset_pending={}", enabled, !enabled);
 }
 
 void StreamlineHooks::streamlineLogCallback(sl::LogType type, const char* msg)

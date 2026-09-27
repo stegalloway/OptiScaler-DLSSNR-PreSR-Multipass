@@ -575,6 +575,27 @@ static HRESULT LocalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
 
     if (willPresent)
     {
+        // A full Streamline DLSS-G feature unload can leave the 6X swapchain
+        // latency at 6. Reset it on OptiScaler's next ordinary Present rather
+        // than from Streamline's logging thread.
+        if (StreamlineHooks::consumeDlssgLatencyResetPending())
+        {
+            IDXGISwapChain2* latencySwapchain = nullptr;
+            const HRESULT queryResult = pSwapChain->QueryInterface(IID_PPV_ARGS(&latencySwapchain));
+            if (SUCCEEDED(queryResult) && latencySwapchain != nullptr)
+            {
+                const HRESULT resetResult = latencySwapchain->SetMaximumFrameLatency(1);
+                LOG_INFO("DLSS-G teardown pacing reset: SetMaximumFrameLatency(1) result=0x{:08X}",
+                         static_cast<unsigned int>(resetResult));
+                latencySwapchain->Release();
+            }
+            else
+            {
+                LOG_WARN("DLSS-G teardown pacing reset: IDXGISwapChain2 unavailable result=0x{:08X}",
+                         static_cast<unsigned int>(queryResult));
+            }
+        }
+
         // Tick feature to let it know if it's frozen
         if (auto currentFeature = State::Instance().currentFeature; currentFeature != nullptr)
         {
