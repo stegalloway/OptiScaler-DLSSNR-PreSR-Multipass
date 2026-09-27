@@ -11,6 +11,7 @@
 #include <hooks/Reflex_Hooks.h>
 #include <hooks/Streamline_Hooks.h>
 #include <hooks/D3D12_Hooks.h>
+#include <framegen/dlssg/MfgUnlock.h>
 #include <with_dx12/dx11_with_dx12_sync.h>
 
 #include <menu/menu_overlay_dx.h>
@@ -51,6 +52,70 @@ static UINT64 _frameCounter = 0;
 static double _lastFrameTime = 0;
 static bool _dx11Device = false;
 static bool _dx12Device = false;
+
+static std::string ModuleForStackAddress(void* address)
+{
+    if (address == nullptr)
+        return "<null>";
+
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCSTR>(address), &module) ||
+        module == nullptr)
+        return "<unknown>";
+
+    char path[MAX_PATH] {};
+    if (GetModuleFileNameA(module, path, ARRAYSIZE(path)) == 0)
+        return "<unnamed>";
+
+    const char* slash = strrchr(path, '\\');
+    const std::string name = slash != nullptr ? std::string(slash + 1) : std::string(path);
+    const auto offset = reinterpret_cast<uintptr_t>(address) - reinterpret_cast<uintptr_t>(module);
+    char formatted[MAX_PATH + 32] {};
+    sprintf_s(formatted, "%s+0x%llX", name.c_str(), static_cast<unsigned long long>(offset));
+    return formatted;
+}
+
+struct DlssgTraceTelemetry
+{
+    bool available = false;
+    bool optionsSeen = false;
+    bool active = false;
+    unsigned int requested = 0;
+    unsigned int sent = 0;
+    bool stateSeen = false;
+    unsigned int presented = 0;
+};
+
+static DlssgTraceTelemetry GetDlssgTraceTelemetry()
+{
+#if defined(OPTISCALER_RTX40_MFG)
+    const auto& telemetry = MfgUnlock::GetTelemetry();
+    return {
+        true,
+        telemetry.optionsSeen.load(std::memory_order_relaxed),
+        telemetry.active.load(std::memory_order_relaxed),
+        telemetry.requested.load(std::memory_order_relaxed),
+        telemetry.sent.load(std::memory_order_relaxed),
+        telemetry.stateSeen.load(std::memory_order_relaxed),
+        telemetry.presented.load(std::memory_order_relaxed),
+    };
+#else
+    return {};
+#endif
+}
+
+static const char* TraceBoolValue(bool available, bool value)
+{
+    if (!available)
+        return "n/a";
+    return value ? "1" : "0";
+}
+
+static std::string TraceUIntValue(bool available, unsigned int value)
+{
+    return available ? std::to_string(value) : std::string("n/a");
+}
 
 // Matched to the known-good 8b102dec Present timing probe. It is retained here
 // only to control for probe-induced pacing in the FG hardening comparison.
@@ -728,6 +793,32 @@ WrappedIDXGISwapChain4::WrappedIDXGISwapChain4(IDXGISwapChain* real, IUnknown* p
 
     CheckForHdrOutput();
 
+    BOOL actualFullscreen = FALSE;
+    IDXGIOutput* actualOutput = nullptr;
+    const HRESULT fsResult = _real->GetFullscreenState(&actualFullscreen, &actualOutput);
+    const auto telemetry = GetDlssgTraceTelemetry();
+    auto* traceFg = State::Instance().currentFG;
+    const bool localFgActive = traceFg != nullptr && traceFg->IsActive();
+    const bool localFgPaused = traceFg != nullptr && traceFg->IsPaused();
+    LOG_INFO("[FSTRACE] kind=create id={} real=0x{:X} actual_fs={} output=0x{:X} fs_result=0x{:08X} "
+             "dlssg={} state_seen={} presented={} options_seen={} requested={} sent={} sl_active={} "
+             "local_fg_active={} local_fg_paused={} fg_output={} current_fg=0x{:X} current_fg_sc=0x{:X} tid={}",
+             _id, reinterpret_cast<uintptr_t>(real),
+             SUCCEEDED(fsResult) ? static_cast<int>(actualFullscreen) : -1,
+             reinterpret_cast<uintptr_t>(actualOutput), static_cast<unsigned int>(fsResult),
+             StreamlineHooks::dlssgFeatureStateLabel(),
+             TraceBoolValue(telemetry.available, telemetry.stateSeen),
+             TraceUIntValue(telemetry.available && telemetry.stateSeen, telemetry.presented),
+             TraceBoolValue(telemetry.available, telemetry.optionsSeen),
+             TraceUIntValue(telemetry.available && telemetry.optionsSeen, telemetry.requested),
+             TraceUIntValue(telemetry.available && telemetry.optionsSeen, telemetry.sent),
+             TraceBoolValue(telemetry.available && telemetry.optionsSeen, telemetry.active),
+             localFgActive, localFgPaused, magic_enum::enum_name(State::Instance().activeFgOutput),
+             reinterpret_cast<uintptr_t>(traceFg),
+             reinterpret_cast<uintptr_t>(State::Instance().currentFGSwapchain), GetCurrentThreadId());
+    if (actualOutput != nullptr)
+        actualOutput->Release();
+
     LOG_INFO("{} created, real: {:X}, refCount: {}", _id, (UINT64) real, refCount);
 }
 
@@ -964,6 +1055,28 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetFullscreenState(BOOL Fullsc
     LOG_DEBUG("Fullscreen: {}, pTarget: {:X}, Caller: {}", Fullscreen, (size_t) pTarget,
               Util::WhoIsTheCaller(_ReturnAddress()));
 
+    BOOL beforeFullscreen = FALSE;
+    IDXGIOutput* beforeOutput = nullptr;
+    const HRESULT beforeStateResult = _real->GetFullscreenState(&beforeFullscreen, &beforeOutput);
+    const bool realExclusiveToWindowed =
+        Fullscreen == FALSE && SUCCEEDED(beforeStateResult) && beforeFullscreen == TRUE;
+
+    void* transitionFrames[3] {};
+    USHORT transitionFrameCount = 0;
+    const DWORD transitionThread = GetCurrentThreadId();
+    const bool transitionFeatureObserved = StreamlineHooks::hasDlssgFeatureState();
+    const bool transitionFeatureEnabled = StreamlineHooks::isDlssgFeatureEnabled();
+    const FGOutput transitionFgOutput = State::Instance().activeFgOutput;
+    auto* transitionFg = State::Instance().currentFG;
+    const uintptr_t transitionCurrentFg = reinterpret_cast<uintptr_t>(transitionFg);
+    const uintptr_t transitionCurrentFgSwapchain =
+        reinterpret_cast<uintptr_t>(State::Instance().currentFGSwapchain);
+    const bool transitionLocalFgActive = transitionFg != nullptr && transitionFg->IsActive();
+    const bool transitionLocalFgPaused = transitionFg != nullptr && transitionFg->IsPaused();
+    const auto transitionTelemetry = GetDlssgTraceTelemetry();
+    if (realExclusiveToWindowed)
+        transitionFrameCount = CaptureStackBackTrace(1, ARRAYSIZE(transitionFrames), transitionFrames, nullptr);
+
     HRESULT result = S_OK;
 
     bool ffxLock = false;
@@ -1003,6 +1116,45 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::SetFullscreenState(BOOL Fullsc
         else
             LOG_DEBUG("result: {:X}", result);
     }
+
+    if (realExclusiveToWindowed)
+    {
+        BOOL afterFullscreen = FALSE;
+        IDXGIOutput* afterOutput = nullptr;
+        const HRESULT afterStateResult = _real->GetFullscreenState(&afterFullscreen, &afterOutput);
+        LOG_INFO("[FSTRACE] kind=transition real=0x{:X} incoming={} pre_fs={} post_fs={} "
+                 "pre_output=0x{:X} post_output=0x{:X} target=0x{:X} set_result=0x{:08X} "
+                 "pre_result=0x{:08X} post_result=0x{:08X} dlssg={} state_seen={} presented={} "
+                 "options_seen={} requested={} sent={} sl_active={} local_fg_active={} local_fg_paused={} "
+                 "fg_output={} current_fg=0x{:X} current_fg_sc=0x{:X} tid={} frames=[{}|{}|{}]",
+                 reinterpret_cast<uintptr_t>(_real), static_cast<int>(Fullscreen),
+                 static_cast<int>(beforeFullscreen),
+                 SUCCEEDED(afterStateResult) ? static_cast<int>(afterFullscreen) : -1,
+                 reinterpret_cast<uintptr_t>(beforeOutput), reinterpret_cast<uintptr_t>(afterOutput),
+                 reinterpret_cast<uintptr_t>(pTarget), static_cast<unsigned int>(result),
+                 static_cast<unsigned int>(beforeStateResult), static_cast<unsigned int>(afterStateResult),
+                 StreamlineHooks::dlssgFeatureStateLabel(transitionFeatureObserved, transitionFeatureEnabled),
+                 TraceBoolValue(transitionTelemetry.available, transitionTelemetry.stateSeen),
+                 TraceUIntValue(transitionTelemetry.available && transitionTelemetry.stateSeen,
+                                transitionTelemetry.presented),
+                 TraceBoolValue(transitionTelemetry.available, transitionTelemetry.optionsSeen),
+                 TraceUIntValue(transitionTelemetry.available && transitionTelemetry.optionsSeen,
+                                transitionTelemetry.requested),
+                 TraceUIntValue(transitionTelemetry.available && transitionTelemetry.optionsSeen,
+                                transitionTelemetry.sent),
+                 TraceBoolValue(transitionTelemetry.available && transitionTelemetry.optionsSeen,
+                                transitionTelemetry.active),
+                 transitionLocalFgActive, transitionLocalFgPaused, magic_enum::enum_name(transitionFgOutput),
+                 transitionCurrentFg, transitionCurrentFgSwapchain, transitionThread,
+                 transitionFrameCount > 0 ? ModuleForStackAddress(transitionFrames[0]) : "<missing>",
+                 transitionFrameCount > 1 ? ModuleForStackAddress(transitionFrames[1]) : "<missing>",
+                 transitionFrameCount > 2 ? ModuleForStackAddress(transitionFrames[2]) : "<missing>");
+        if (afterOutput != nullptr)
+            afterOutput->Release();
+    }
+
+    if (beforeOutput != nullptr)
+        beforeOutput->Release();
 
     if (ffxLock)
     {

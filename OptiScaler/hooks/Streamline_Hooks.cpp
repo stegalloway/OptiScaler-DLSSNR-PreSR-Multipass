@@ -183,7 +183,8 @@ void StreamlineHooks::observeDlssgFeatureStateMessage(const char* msg)
     dlssgFeatureStateObserved.store(true, std::memory_order_release);
 
     if (!wasObserved || wasEnabled != enabled)
-        LOG_INFO("DLSS-G feature state: enabled={}", enabled);
+        LOG_INFO("[FSTRACE] kind=feature_state state={} tid={}", enabled ? "loaded" : "unloaded",
+                 GetCurrentThreadId());
 }
 
 void StreamlineHooks::streamlineLogCallback(sl::LogType type, const char* msg)

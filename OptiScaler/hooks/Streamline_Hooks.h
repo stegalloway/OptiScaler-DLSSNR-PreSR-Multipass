@@ -150,6 +150,16 @@ class StreamlineHooks
     static bool hasGameDlssgOptions() { return gameDlssgOptionsObserved.load(std::memory_order_acquire); }
     static bool hasDlssgFeatureState() { return dlssgFeatureStateObserved.load(std::memory_order_acquire); }
     static bool isDlssgFeatureEnabled() { return dlssgFeatureEnabled.load(std::memory_order_relaxed); }
+    static const char* dlssgFeatureStateLabel(bool observed, bool enabled)
+    {
+        if (!observed)
+            return "unobserved";
+        return enabled ? "loaded" : "unloaded";
+    }
+    static const char* dlssgFeatureStateLabel()
+    {
+        return dlssgFeatureStateLabel(hasDlssgFeatureState(), isDlssgFeatureEnabled());
+    }
     static MfgHdrUiDiagnostics::Snapshot getMfgHdrUiDiagnostics();
     static void applyMenuDlssgInterlock(sl::DLSSGOptions& options, bool potentiallyActive);
 
