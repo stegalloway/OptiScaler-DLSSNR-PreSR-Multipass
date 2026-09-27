@@ -87,3 +87,24 @@ Passed on 2026-09-27:
   temporal-method and flip-metering cases.
 - `tests/run_nr_finished_picture_policy.cmd`: passed.
 - `tests/owned_mutex/run.ps1`: same-thread recursive bypass and other-thread blocking passed.
+
+## Miles lifecycle acceptance (2026-09-27)
+
+Test build: `f1b0626f0c9aa8d86273afba1aa79a08acfbe9b0`
+(`dxgi.dll` SHA-256 `8571A1C1EC89991697A580E2B1F6FC6F5745E6BFA197A4838CC5451585C2113A`).
+
+Observed sequence included FG off, 2X, off, 6X, off and a lower multiplier again. The run completed normally.
+
+Key evidence:
+
+- zero `[FGWAIT]` lines and no queue-idle / finished-picture timeout;
+- ownership switched to `false` on each observed Streamline DLSS-G feature unload and back to `true` on reload;
+- the first local `sl.dlss_g.dll` really unloaded and then reloaded at the same base address; generation tracking correctly changed from plugin generation 1 to generation 2 rather than treating it as the old module;
+- the NVIDIA OTA Streamline plugin loaded separately as plugin generation 3 and had its own frame-count clamp patched;
+- provider generation 1 (`nvngx_dlssg.dll` 310.9.1) patched successfully;
+- the 6X phase forwarded five generated frames and the subsequent feature unload released finished-picture ownership despite stale prior SetOptions state;
+- no device-removed, crash or deadlock signature occurred.
+
+The Streamline `Setting different 'common' constants multiple times within the same frame` messages are pre-existing noise, not introduced by this change: the archive already contains hundreds of occurrences, including the earlier cap-off controlled sweep.
+
+Result: A-C lifecycle acceptance passed on Miles Morales. Keep `[DLSSG] Diagnostics=false` for normal use.
