@@ -66,6 +66,10 @@ struct Status
     // The Streamline DLSS-G plugin's own frame-count clamp. A string literal, empty until a plugin has
     // been seen, so the overlay can read it while a hook thread writes it.
     const char* PluginCeiling = "";
+    // Hook state for the current Streamline plugin generation. "blocked" means
+    // direct MFG code patches are independent, but slGetPluginFunction overrides are inactive.
+    const char* PluginHook = "";
+    uint64_t PluginHookGeneration = 0;
 
     // Software frame pacing (the flip-metering patch). A string literal like PluginCeiling: empty until a
     // plugin has been seen, "patched", or the reason it was not.
@@ -112,12 +116,25 @@ void RecordSetOptions(unsigned int requested, unsigned int sent, bool active, un
 void RecordState(unsigned int presented);
 void ResetTelemetry();
 
+struct PluginToken
+{
+    uint32_t slot = UINT32_MAX;
+    uint64_t generation = 0;
+    HMODULE module = nullptr;
+    size_t imageSize = 0;
+    DWORD timestamp = 0;
+
+    explicit operator bool() const { return slot != UINT32_MAX && generation != 0 && module != nullptr; }
+};
+
 // A Streamline DLSS-G plugin (sl.dlss_g) was loaded, from wherever the game or the driver's OTA store
 // put it. Its own frame-count clamp is neutralised once the snippet unlock has landed, so a wrapper
-// that cached 1 cannot lower the ceiling again. Ordinary threads and the load hook; never scans.
-void OnStreamlinePluginLoaded(HMODULE plugin);
-// Called after a real unload attempt; retires the generation only when the image is no longer mapped.
+// that cached 1 cannot lower the ceiling again. Returns a stable generation token used by the hook layer.
+PluginToken OnStreamlinePluginLoaded(HMODULE plugin);
+// Loader-unload callback: lock-free atomic stale marking only. No loader calls and no g_mutex.
 void OnStreamlinePluginUnloaded(HMODULE plugin);
+bool PluginGenerationStale(const PluginToken& token);
+void SetPluginHookStatus(uint64_t generation, const char* status);
 
 // Whether the Streamline plugin was put on software frame pacing.
 bool SoftwarePacing();

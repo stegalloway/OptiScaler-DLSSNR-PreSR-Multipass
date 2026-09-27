@@ -25,6 +25,129 @@
 
 namespace
 {
+bool ReadDlssgPeMetadata(HMODULE module, size_t& imageSize, uint32_t& timestamp)
+{
+    imageSize = 0;
+    timestamp = 0;
+    if (module == nullptr)
+        return false;
+
+    __try
+    {
+        auto* base = reinterpret_cast<const uint8_t*>(module);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0)
+            return false;
+
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+            return false;
+
+        imageSize = nt->OptionalHeader.SizeOfImage;
+        timestamp = nt->FileHeader.TimeDateStamp;
+        return imageSize != 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+bool IsReadableExecutableRegion(uintptr_t address, size_t bytes)
+{
+    if (address == 0 || bytes == 0)
+        return false;
+
+    MEMORY_BASIC_INFORMATION mbi {};
+    if (VirtualQuery(reinterpret_cast<const void*>(address), &mbi, sizeof(mbi)) != sizeof(mbi))
+        return false;
+
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+        return false;
+
+    const DWORD protection = mbi.Protect & 0xFFu;
+    const bool readableExecutable =
+        protection == PAGE_EXECUTE_READ || protection == PAGE_EXECUTE_READWRITE || protection == PAGE_EXECUTE_WRITECOPY;
+    if (!readableExecutable)
+        return false;
+
+    const auto regionStart = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    const auto regionEnd = regionStart + mbi.RegionSize;
+    return address >= regionStart && address <= regionEnd && bytes <= regionEnd - address;
+}
+
+class DlssgDetachProbe
+{
+  public:
+    DlssgDetachProbe(const DlssgHookLifecycle::ModuleIdentity& identity, bool locallyStale)
+        : _identity(identity), _locallyStale(locallyStale)
+    {
+    }
+
+    bool GenerationStale(const DlssgHookLifecycle::ModuleIdentity& identity)
+    {
+        if (_locallyStale)
+            return true;
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::PluginToken token { identity.slot, identity.generation, reinterpret_cast<HMODULE>(identity.module),
+                                       identity.imageSize, identity.timestamp };
+        return MfgUnlock::PluginGenerationStale(token);
+#else
+        (void) identity;
+        return false;
+#endif
+    }
+
+    bool Pin(uintptr_t target)
+    {
+        auto getModuleHandleEx = KernelBaseProxy::GetModuleHandleExW_();
+        if (getModuleHandleEx == nullptr)
+            return false;
+
+        // Deliberately omit UNCHANGED_REFCOUNT: this temporary reference closes the
+        // unload race between validation and DetourDetach.
+        return getModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(target), &_pinned) !=
+               FALSE;
+    }
+
+    DlssgHookLifecycle::ModuleIdentity PinnedIdentity()
+    {
+        auto identity = _identity;
+        identity.module = reinterpret_cast<uintptr_t>(_pinned);
+        if (!ReadDlssgPeMetadata(_pinned, identity.imageSize, identity.timestamp))
+        {
+            identity.imageSize = 0;
+            identity.timestamp = 0;
+        }
+        return identity;
+    }
+
+    bool ReadableExecutable(uintptr_t target, size_t bytes) { return IsReadableExecutableRegion(target, bytes); }
+
+    bool Read(uintptr_t target, void* bytes, size_t count)
+    {
+        SIZE_T read = 0;
+        return ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(target), bytes, count, &read) !=
+                   FALSE &&
+               read == count;
+    }
+
+    void ReleasePin()
+    {
+        if (_pinned == nullptr)
+            return;
+
+        if (auto freeLibrary = KernelBaseProxy::FreeLibrary_(); freeLibrary != nullptr)
+            freeLibrary(_pinned);
+        _pinned = nullptr;
+    }
+
+  private:
+    DlssgHookLifecycle::ModuleIdentity _identity {};
+    bool _locallyStale = false;
+    HMODULE _pinned = nullptr;
+};
+
 struct RecentDlssgOptionsTrace
 {
     uint64_t seq = 0;
@@ -2613,29 +2736,39 @@ void StreamlineHooks::hookDlss(HMODULE slDlss)
 
 // SL DLSSG
 
-void StreamlineHooks::unhookDlssg()
+void StreamlineHooks::clearDlssgHookRecordLocked()
 {
-    LOG_FUNC();
+    o_dlssg_slGetPluginFunction = nullptr;
+    dlssgHookRecord.Clear();
+    dlssgHookModule.store(0, std::memory_order_release);
+    dlssgHookStale.store(false, std::memory_order_release);
+}
 
-    if (!o_dlssg_slGetPluginFunction)
+bool StreamlineHooks::detachDlssgHookLocked(const DlssgHookLifecycle::ModuleIdentity* replacement)
+{
+    if (!dlssgHookRecord.installed || o_dlssg_slGetPluginFunction == nullptr)
     {
-        hookedDlssgModule = nullptr;
-        return;
+        clearDlssgHookRecordLocked();
+        return true;
     }
 
-    // A plugin can be unloaded before Streamline asks us to hook its replacement.
-    // Never ask Detours to detach through a trampoline whose backing image is gone.
-    if (hookedDlssgModule != nullptr)
+    // If patch capture ever failed after installation, never guess at a detach later.
+    // Keep the live record visible and block replacement hooking instead.
+    if (dlssgHookRecord.patchSize == 0)
     {
-        HMODULE stillMapped = nullptr;
-        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                reinterpret_cast<LPCWSTR>(hookedDlssgModule), &stillMapped))
-        {
-            LOG_DEBUG("DLSSG hook owner already unloaded; discarding stale hook bookkeeping");
-            o_dlssg_slGetPluginFunction = nullptr;
-            hookedDlssgModule = nullptr;
-            return;
-        }
+        LOG_ERROR("DLSSG hook cannot be safely detached: installed patch bytes were not captured");
+        return false;
+    }
+
+    DlssgDetachProbe probe(dlssgHookRecord.identity, dlssgHookStale.load(std::memory_order_acquire));
+    const auto decision = DlssgHookLifecycle::ValidateForDetach(dlssgHookRecord, replacement, probe);
+
+    if (decision != DlssgHookLifecycle::DetachDecision::Detach)
+    {
+        LOG_DEBUG("DLSSG hook record discarded without DetourDetach: generation={} reason={}",
+                  dlssgHookRecord.identity.generation, DlssgHookLifecycle::DecisionName(decision));
+        clearDlssgHookRecordLocked();
+        return true;
     }
 
     DetourTransactionBegin();
@@ -2643,34 +2776,36 @@ void StreamlineHooks::unhookDlssg()
     DetourDetach(&(PVOID&) o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction);
 
     const auto detourResult = DetourTransactionCommit();
+    probe.ReleasePin();
+
     if (detourResult != NO_ERROR)
     {
         // This transaction contains only the DLSS-G slGetPluginFunction hook.
-        // Keep the live bookkeeping so a later call can retry the detach.
-        LOG_ERROR("Failed to unhook DLSSG: {:X}", detourResult);
-        return;
+        // The module stayed pinned through commit, so this is a genuine live-hook
+        // failure. Keep all bookkeeping intact so the next plugin-load opportunity
+        // can retry rather than silently overwriting the only trampoline slot.
+        LOG_ERROR("Failed to unhook DLSSG generation {}: {:X}", dlssgHookRecord.identity.generation, detourResult);
+        return false;
     }
 
-    o_dlssg_slGetPluginFunction = nullptr;
-    hookedDlssgModule = nullptr;
+    DlssgHookLifecycle::ApplyDetachResult(dlssgHookRecord, true);
+    clearDlssgHookRecordLocked();
+    return true;
+}
+
+void StreamlineHooks::unhookDlssg()
+{
+    LOG_FUNC();
+    std::lock_guard lock(dlssgHookMutex);
+    detachDlssgHookLocked();
 }
 
 void StreamlineHooks::notifyDlssgModuleUnloaded(HMODULE module)
 {
-    if (module == nullptr || module != hookedDlssgModule)
-        return;
-
-    HMODULE stillMapped = nullptr;
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCWSTR>(module), &stillMapped))
-        return;
-
-    // The real loader has already unmapped the image, so no Detours operation is
-    // valid anymore. Retire only the stale bookkeeping; the next generation will
-    // install a fresh hook in hookDlssg().
-    o_dlssg_slGetPluginFunction = nullptr;
-    hookedDlssgModule = nullptr;
-    LOG_DEBUG("DLSSG plugin unloaded; retired stale hook bookkeeping");
+    // Called from the loader-unload path. Do not take dlssgHookMutex and do not
+    // call loader APIs here; just retire the matching generation atomically.
+    if (module != nullptr && dlssgHookModule.load(std::memory_order_acquire) == reinterpret_cast<uintptr_t>(module))
+        dlssgHookStale.store(true, std::memory_order_release);
 }
 
 void StreamlineHooks::hookDlssg(HMODULE slDlssg)
@@ -2683,37 +2818,181 @@ void StreamlineHooks::hookDlssg(HMODULE slDlssg)
         return;
     }
 
+    DlssgHookLifecycle::ModuleIdentity incoming {};
+    incoming.module = reinterpret_cast<uintptr_t>(slDlssg);
+
 #if defined(OPTISCALER_RTX40_MFG)
-    // The game's copy or the driver's OTA one; both come through here.
-    MfgUnlock::OnStreamlinePluginLoaded(slDlssg);
+    // The game's copy or the driver's OTA one; direct code patches are independent
+    // of whether the Streamline function hook below can be installed.
+    const auto pluginToken = MfgUnlock::OnStreamlinePluginLoaded(slDlssg);
+    if (pluginToken)
+    {
+        incoming.generation = pluginToken.generation;
+        incoming.slot = pluginToken.slot;
+        incoming.imageSize = pluginToken.imageSize;
+        incoming.timestamp = pluginToken.timestamp;
+    }
 #endif
 
-    if (o_dlssg_slGetPluginFunction)
-        unhookDlssg();
-
-    o_dlssg_slGetPluginFunction =
-        reinterpret_cast<PFN_slGetPluginFunction>(KernelBaseProxy::GetProcAddress_()(slDlssg, "slGetPluginFunction"));
-
-    if (o_dlssg_slGetPluginFunction != nullptr)
+    if (incoming.imageSize == 0)
     {
-        LOG_TRACE("Hooking slGetPluginFunction in sl.dlssg");
-        DetourTransactionBegin();
-        DetourUpdateThread(GetCurrentThread());
-
-        DetourAttach(&(PVOID&) o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction);
-
-        const auto detourResult = DetourTransactionCommit();
-        if (detourResult != NO_ERROR)
+        if (!ReadDlssgPeMetadata(slDlssg, incoming.imageSize, incoming.timestamp))
         {
-            LOG_ERROR("Failed to hook DLSSG: {:X}", detourResult);
-            o_dlssg_slGetPluginFunction = nullptr;
-            hookedDlssgModule = nullptr;
+            LOG_WARN("DLSSG hook: could not read plugin PE identity");
+            return;
+        }
+    }
+
+    std::lock_guard lock(dlssgHookMutex);
+
+    if (incoming.generation == 0)
+    {
+        const bool sameLiveGeneration = dlssgHookRecord.installed && !dlssgHookStale.load(std::memory_order_acquire) &&
+                                        dlssgHookRecord.identity.module == incoming.module &&
+                                        dlssgHookRecord.identity.imageSize == incoming.imageSize &&
+                                        dlssgHookRecord.identity.timestamp == incoming.timestamp;
+        if (sameLiveGeneration)
+        {
+            incoming.generation = dlssgHookRecord.identity.generation;
+            incoming.slot = dlssgHookRecord.identity.slot;
         }
         else
         {
-            hookedDlssgModule = slDlssg;
+            incoming.generation = dlssgLocalGenerationCounter.fetch_add(1, std::memory_order_relaxed) + 1;
         }
     }
+
+    // Hold a real reference to the replacement while resolving the previous hook
+    // and installing/capturing the new Detours patch.
+    HMODULE incomingPin = nullptr;
+    auto getModuleHandleEx = KernelBaseProxy::GetModuleHandleExW_();
+    auto freeLibrary = KernelBaseProxy::FreeLibrary_();
+    if (getModuleHandleEx == nullptr ||
+        !getModuleHandleEx(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(slDlssg), &incomingPin))
+    {
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::SetPluginHookStatus(incoming.generation, "stale before hook: module pin failed");
+#endif
+        LOG_WARN("DLSSG hook generation {} became unavailable before hook install", incoming.generation);
+        return;
+    }
+
+    const auto releaseIncomingPin = [&]
+    {
+        if (incomingPin != nullptr && freeLibrary != nullptr)
+            freeLibrary(incomingPin);
+        incomingPin = nullptr;
+    };
+
+    if (!detachDlssgHookLocked(&incoming))
+    {
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::SetPluginHookStatus(
+            incoming.generation,
+            "blocked: previous generation still live; Streamline overrides inactive; direct MFG patches independent");
+#endif
+        if (dlssgBlockedGenerationLogged != incoming.generation)
+        {
+            dlssgBlockedGenerationLogged = incoming.generation;
+            LOG_WARN("previous DLSS-G hook still live; generation {} not hooked; Streamline overrides inactive "
+                     "(direct MFG patches remain independent)",
+                     incoming.generation);
+        }
+        releaseIncomingPin();
+        return;
+    }
+
+    auto* target =
+        reinterpret_cast<PFN_slGetPluginFunction>(KernelBaseProxy::GetProcAddress_()(slDlssg, "slGetPluginFunction"));
+    if (target == nullptr)
+    {
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::SetPluginHookStatus(incoming.generation, "not hooked: slGetPluginFunction missing");
+#endif
+        releaseIncomingPin();
+        return;
+    }
+
+    o_dlssg_slGetPluginFunction = target;
+    LOG_TRACE("Hooking slGetPluginFunction in sl.dlssg generation {}", incoming.generation);
+
+    DetourTransactionBegin();
+    DetourUpdateThread(GetCurrentThread());
+    DetourAttach(&(PVOID&) o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction);
+    const auto detourResult = DetourTransactionCommit();
+
+    if (detourResult != NO_ERROR)
+    {
+        LOG_ERROR("Failed to hook DLSSG generation {}: {:X}", incoming.generation, detourResult);
+        o_dlssg_slGetPluginFunction = nullptr;
+#if defined(OPTISCALER_RTX40_MFG)
+        MfgUnlock::SetPluginHookStatus(incoming.generation, "not hooked: Detours attach failed");
+#endif
+        releaseIncomingPin();
+        return;
+    }
+
+    DlssgHookLifecycle::HookRecord installed {};
+    installed.identity = incoming;
+    installed.target = reinterpret_cast<uintptr_t>(target);
+    installed.patchSize = static_cast<uint8_t>(installed.patchedBytes.size());
+    installed.installed = true;
+
+    SIZE_T bytesRead = 0;
+    const bool captured = IsReadableExecutableRegion(installed.target, installed.patchSize) &&
+                          ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(installed.target),
+                                            installed.patchedBytes.data(), installed.patchSize, &bytesRead) != FALSE &&
+                          bytesRead == installed.patchSize;
+
+    if (!captured)
+    {
+        LOG_ERROR("DLSSG hook generation {} installed but patch-byte capture failed; rolling it back",
+                  incoming.generation);
+
+        DetourTransactionBegin();
+        DetourUpdateThread(GetCurrentThread());
+        DetourDetach(&(PVOID&) o_dlssg_slGetPluginFunction, hkdlssg_slGetPluginFunction);
+        const auto rollbackResult = DetourTransactionCommit();
+
+        if (rollbackResult == NO_ERROR)
+        {
+            o_dlssg_slGetPluginFunction = nullptr;
+#if defined(OPTISCALER_RTX40_MFG)
+            MfgUnlock::SetPluginHookStatus(incoming.generation, "not hooked: patch validation capture failed");
+#endif
+        }
+        else
+        {
+            // This is deliberately non-discardable: without captured bytes there is
+            // no safe future identity check. Keep it installed and visibly block a
+            // replacement rather than guessing.
+            installed.patchSize = 0;
+            dlssgHookRecord = installed;
+            dlssgHookModule.store(incoming.module, std::memory_order_release);
+            dlssgHookStale.store(false, std::memory_order_release);
+#if defined(OPTISCALER_RTX40_MFG)
+            MfgUnlock::SetPluginHookStatus(incoming.generation,
+                                           "blocked: installed hook could not be validated or rolled back");
+#endif
+            LOG_ERROR("DLSSG hook generation {} rollback after capture failure also failed: {:X}", incoming.generation,
+                      rollbackResult);
+        }
+
+        releaseIncomingPin();
+        return;
+    }
+
+    dlssgHookRecord = installed;
+    dlssgHookModule.store(incoming.module, std::memory_order_release);
+    dlssgHookStale.store(false, std::memory_order_release);
+    dlssgBlockedGenerationLogged = 0;
+#if defined(OPTISCALER_RTX40_MFG)
+    MfgUnlock::SetPluginHookStatus(incoming.generation, "hooked");
+#endif
+    LOG_INFO("DLSSG hook generation {} installed target=0x{:X} base=0x{:X} image_size={} timestamp=0x{:08X}",
+             incoming.generation, installed.target, incoming.module, incoming.imageSize, incoming.timestamp);
+
+    releaseIncomingPin();
 }
 
 // Local SL DLSSG

@@ -128,3 +128,44 @@ Follow-up hardening:
 
 This removes the misleading `1E7` path while preserving a real detach error if one occurs against a still-live
 plugin.
+
+### Same-base reload / detour identity hardening
+
+The first stale-detour cleanup was not sufficient by itself: a replacement DLL can reuse the same base address.
+"Something is mapped at this address" therefore cannot prove that the old hook still belongs to that image.
+
+The hook layer now records a full plugin-generation identity: generation token, lifecycle slot, HMODULE/base,
+PE `TimeDateStamp`, `SizeOfImage`, original `slGetPluginFunction` target, and the first 16 bytes of the
+installed Detours patch.
+
+Unload handling is deliberately loader-lock safe:
+
+- MFG plugin lifecycle slots are fixed in memory and use atomic stale flags.
+- The unload callback performs only atomic stale marking; it takes no hook/MFG mutex and calls no loader APIs.
+- Delayed ceiling patching also checks that lifecycle token before touching plugin memory.
+
+Before a detach, validation is ordered for safety:
+
+1. same-base/different-generation and atomic stale checks;
+2. take a real temporary module reference with `GetModuleHandleExW(FROM_ADDRESS)` (without
+   `UNCHANGED_REFCOUNT`);
+3. verify the pinned image's PE identity;
+4. `VirtualQuery` the target and require committed readable+executable memory;
+5. compare the captured Detours patch bytes;
+6. only then call `DetourDetach`.
+
+The temporary module reference remains held through `DetourTransactionCommit` and is released immediately
+afterward. If any identity/memory check fails, the record is stale and is discarded without detaching.
+
+A genuine Detours failure against a matching live hook keeps the old record/trampoline intact. The replacement
+generation is deliberately not hooked and the menu reports:
+
+`blocked: previous generation still live; Streamline overrides inactive; direct MFG patches independent`
+
+The warning is logged once per blocked replacement generation. Direct MFG code/ceiling/flip patches are still
+attempted independently; only the Streamline function overrides are inactive while blocked. A later plugin-load
+opportunity retries the old detach before installing the replacement hook.
+
+Regression coverage in `tests/dlssg_hook_lifecycle.cpp` includes same-base/different-generation discard,
+same-generation intact-patch detach, PE-identity mismatch before target-byte read, unmapped target with no byte
+read, atomic stale generation, and genuine detach failure followed by successful retry.

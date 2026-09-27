@@ -11,6 +11,7 @@
 #include "include/sl.param/parameters.h"
 
 #include "Hook_Utils.h"
+#include "DlssgHookLifecycle.h"
 #include "DlssgOptionsState.h"
 #include <framegen/dlssg/MfgHdrUiDiagnostics.h>
 #include <atomic>
@@ -194,6 +195,8 @@ class StreamlineHooks
                                     const sl::FrameToken* frame = nullptr);
     static void observeMfgHdrUiOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options);
     static MfgHdrUiDiagnostics::AutoRecompositionAction applyMfgHdrUiAutomaticHandling(sl::DLSSGOptions& options);
+    static bool detachDlssgHookLocked(const DlssgHookLifecycle::ModuleIdentity* replacement = nullptr);
+    static void clearDlssgHookRecordLocked();
 
     // System caps
     inline static SystemCaps* systemCaps = nullptr;
@@ -272,7 +275,12 @@ class StreamlineHooks
     inline static PFN_slGetPluginJSONConfig_sl1 o_dlssg_slGetPluginJSONConfig_sl1 = nullptr;
     inline static decltype(&slDLSSGSetOptions) o_slDLSSGSetOptions = nullptr;
     inline static decltype(&slDLSSGGetState) o_slDLSSGGetState = nullptr;
-    inline static HMODULE hookedDlssgModule = nullptr;
+    inline static std::recursive_mutex dlssgHookMutex {};
+    inline static DlssgHookLifecycle::HookRecord dlssgHookRecord {};
+    inline static std::atomic_bool dlssgHookStale { false };
+    inline static std::atomic_uintptr_t dlssgHookModule { 0 };
+    inline static std::atomic_uint64_t dlssgLocalGenerationCounter { 0 };
+    inline static uint64_t dlssgBlockedGenerationLogged = 0;
     static inline DlssgOptionsState dlssgOptionsState {};
     static inline std::atomic_bool gameDlssgOptionsObserved { false };
     static inline std::atomic_bool dlssgFeatureStateObserved { false };

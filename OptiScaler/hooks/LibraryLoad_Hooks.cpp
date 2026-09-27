@@ -718,10 +718,11 @@ std::optional<NTSTATUS> LibraryLoadHooks::FreeLibrary(PVOID lpLibrary)
 void LibraryLoadHooks::NotifyLibraryUnloaded(PVOID library)
 {
     const auto module = static_cast<HMODULE>(library);
-    StreamlineHooks::notifyDlssgModuleUnloaded(module);
 #if defined(OPTISCALER_RTX40_MFG)
+    // Loader-unload path: atomic stale marking only, no g_mutex or loader queries.
     MfgUnlock::OnStreamlinePluginUnloaded(module);
 #endif
+    StreamlineHooks::notifyDlssgModuleUnloaded(module);
 }
 
 HMODULE LibraryLoadHooks::LoadNvApi()

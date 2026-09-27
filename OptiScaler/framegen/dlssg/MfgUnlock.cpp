@@ -241,13 +241,30 @@ HMODULE FindRetainedProvider()
     return found;
 }
 
-// Each Streamline DLSS-G plugin load is a generation. Unlike patched providers, plugins are not pinned
-// for process lifetime, so a later load can reuse the same HMODULE/base. Unload notification retires
-// the old generation; a reload is independently inspected and patched.
+// Each Streamline DLSS-G plugin load is a generation. Plugin code is not pinned for process lifetime,
+// so the same HMODULE/base can later hold a different build. Lifecycle slots are fixed in memory and
+// atomically retired by the unload notification without taking g_mutex or calling into the loader.
+constexpr uint32_t kPluginLifecycleSlots = 16;
+
+struct PluginLifecycleSlot
+{
+    std::atomic<uintptr_t> module { 0 };
+    std::atomic<uint64_t> generation { 0 };
+    std::atomic<size_t> imageSize { 0 };
+    std::atomic<uint32_t> timestamp { 0 };
+    std::atomic_bool stale { true };
+};
+
+std::array<PluginLifecycleSlot, kPluginLifecycleSlots> g_pluginLifecycle {};
+uint64_t g_nextPluginGeneration = 0;
+
 struct PluginGeneration
 {
     HMODULE module = nullptr;
     uint64_t generation = 0;
+    uint32_t lifecycleSlot = UINT32_MAX;
+    size_t imageSize = 0;
+    DWORD timestamp = 0;
     bool ceilingTried = false;
     const char* ceilingStatus = "";
     const char* flipStatus = "";
@@ -255,7 +272,77 @@ struct PluginGeneration
 };
 
 std::vector<PluginGeneration> g_plugins;
-uint64_t g_nextPluginGeneration = 0;
+
+MfgUnlock::PluginToken RegisterPluginGeneration(HMODULE plugin)
+{
+    size_t imageSize = 0;
+    DWORD timestamp = 0;
+    if (!ModulePeMetadata(plugin, imageSize, timestamp))
+        return {};
+
+    const auto moduleValue = reinterpret_cast<uintptr_t>(plugin);
+    for (uint32_t i = 0; i < g_pluginLifecycle.size(); ++i)
+    {
+        auto& slot = g_pluginLifecycle[i];
+        if (!slot.stale.load(std::memory_order_acquire) && slot.module.load(std::memory_order_relaxed) == moduleValue &&
+            slot.imageSize.load(std::memory_order_relaxed) == imageSize &&
+            slot.timestamp.load(std::memory_order_relaxed) == timestamp)
+        {
+            return { i, slot.generation.load(std::memory_order_relaxed), plugin, imageSize, timestamp };
+        }
+    }
+
+    uint32_t freeSlot = UINT32_MAX;
+    for (uint32_t i = 0; i < g_pluginLifecycle.size(); ++i)
+    {
+        if (g_pluginLifecycle[i].stale.load(std::memory_order_acquire))
+        {
+            freeSlot = i;
+            break;
+        }
+    }
+
+    if (freeSlot == UINT32_MAX)
+    {
+        LOG_ERROR("MFG unlock: no free Streamline plugin generation slots");
+        return {};
+    }
+
+    const uint64_t generation = ++g_nextPluginGeneration;
+    auto& slot = g_pluginLifecycle[freeSlot];
+
+    // Publish stale while replacing the slot, then publish the complete identity.
+    slot.stale.store(true, std::memory_order_release);
+    slot.module.store(moduleValue, std::memory_order_relaxed);
+    slot.generation.store(generation, std::memory_order_relaxed);
+    slot.imageSize.store(imageSize, std::memory_order_relaxed);
+    slot.timestamp.store(timestamp, std::memory_order_relaxed);
+    slot.stale.store(false, std::memory_order_release);
+
+    return { freeSlot, generation, plugin, imageSize, timestamp };
+}
+
+bool TokenStale(const MfgUnlock::PluginToken& token)
+{
+    if (!token || token.slot >= g_pluginLifecycle.size())
+        return true;
+
+    const auto& slot = g_pluginLifecycle[token.slot];
+    if (slot.generation.load(std::memory_order_acquire) != token.generation)
+        return true;
+    if (slot.stale.load(std::memory_order_acquire))
+        return true;
+
+    return slot.module.load(std::memory_order_relaxed) != reinterpret_cast<uintptr_t>(token.module) ||
+           slot.imageSize.load(std::memory_order_relaxed) != token.imageSize ||
+           slot.timestamp.load(std::memory_order_relaxed) != token.timestamp;
+}
+
+MfgUnlock::PluginToken TokenFor(const PluginGeneration& generation)
+{
+    return { generation.lifecycleSlot, generation.generation, generation.module, generation.imageSize,
+             generation.timestamp };
+}
 
 void RefreshPluginStatus()
 {
@@ -357,6 +444,12 @@ void PatchPluginCeilings()
             continue;
 
         generation.ceilingTried = true;
+        if (TokenStale(TokenFor(generation)))
+        {
+            generation.ceilingStatus = "unloaded";
+            continue;
+        }
+
         auto plugin = generation.module;
 
         wchar_t path[MAX_PATH] {};
@@ -1214,32 +1307,41 @@ void MfgUnlock::ResetTelemetry()
     g_telemetry.maxPresented.store(0, std::memory_order_relaxed);
 }
 
-void MfgUnlock::OnStreamlinePluginLoaded(HMODULE plugin)
+MfgUnlock::PluginToken MfgUnlock::OnStreamlinePluginLoaded(HMODULE plugin)
 {
-    if (plugin == nullptr || !AdaUnlockWanted())
-        return;
+    if (plugin == nullptr)
+        return {};
+
+    PluginToken token {};
+    bool patchRequested = false;
 
     {
         std::lock_guard lock(g_mutex);
+        token = RegisterPluginGeneration(plugin);
+        if (!token)
+            return {};
 
-        auto existing = std::find_if(g_plugins.begin(), g_plugins.end(),
-                                     [&](const PluginGeneration& generation)
-                                     { return generation.module == plugin; });
+        patchRequested = AdaUnlockWanted();
+        if (!patchRequested)
+            return token;
+
+        auto existing = std::find_if(g_plugins.begin(), g_plugins.end(), [&](const PluginGeneration& generation)
+                                     { return generation.generation == token.generation; });
         if (existing == g_plugins.end())
         {
             PluginGeneration generation {};
             generation.module = plugin;
-            generation.generation = ++g_nextPluginGeneration;
+            generation.generation = token.generation;
+            generation.lifecycleSlot = token.slot;
+            generation.imageSize = token.imageSize;
+            generation.timestamp = token.timestamp;
             g_plugins.push_back(generation);
 
             wchar_t path[MAX_PATH] {};
             GetModuleFileNameW(plugin, path, MAX_PATH);
-            size_t imageSize = 0;
-            DWORD timestamp = 0;
-            ModulePeMetadata(plugin, imageSize, timestamp);
             LOG_INFO("MFG unlock: plugin generation {} loaded path={} base=0x{:X} image_size={} timestamp=0x{:08X}",
-                     g_plugins.back().generation, wstring_to_string(path), reinterpret_cast<uintptr_t>(plugin),
-                     imageSize, timestamp);
+                     token.generation, wstring_to_string(path), reinterpret_cast<uintptr_t>(plugin), token.imageSize,
+                     token.timestamp);
 
             // At load, ahead of any use of the plugin.
             PatchFlipMetering(g_plugins.back());
@@ -1247,7 +1349,10 @@ void MfgUnlock::OnStreamlinePluginLoaded(HMODULE plugin)
     }
 
     // A no-op until the snippet unlock has landed; TryApply calls it again then.
-    PatchPluginCeilings();
+    if (patchRequested)
+        PatchPluginCeilings();
+
+    return token;
 }
 
 void MfgUnlock::OnStreamlinePluginUnloaded(HMODULE plugin)
@@ -1255,27 +1360,22 @@ void MfgUnlock::OnStreamlinePluginUnloaded(HMODULE plugin)
     if (plugin == nullptr)
         return;
 
-    // This callback is made after the real loader unload call. If another reference keeps the
-    // image mapped, it is still the same live generation and must not be retired.
-    HMODULE stillMapped = nullptr;
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                               GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           reinterpret_cast<LPCWSTR>(plugin), &stillMapped))
-        return;
-
-    std::lock_guard lock(g_mutex);
-    const auto before = g_plugins.size();
-    std::erase_if(g_plugins, [&](const PluginGeneration& generation) { return generation.module == plugin; });
-    if (g_plugins.size() == before)
-        return;
-
-    if (Config::Instance()->FGDLSSGDiagnostics.value_or_default())
-        LOG_INFO("[FGDRIVERTRACE] kind=dlssg_plugin_unloaded base=0x{:X} live_generations={}",
-                 reinterpret_cast<uintptr_t>(plugin), g_plugins.size());
-
-    RefreshPluginStatus();
+    const auto moduleValue = reinterpret_cast<uintptr_t>(plugin);
+    for (auto& slot : g_pluginLifecycle)
+    {
+        if (slot.module.load(std::memory_order_relaxed) == moduleValue)
+            slot.stale.store(true, std::memory_order_release);
+    }
 }
 
+bool MfgUnlock::PluginGenerationStale(const PluginToken& token) { return TokenStale(token); }
+
+void MfgUnlock::SetPluginHookStatus(uint64_t generation, const char* status)
+{
+    std::lock_guard lock(g_mutex);
+    g_status.PluginHookGeneration = generation;
+    g_status.PluginHook = status != nullptr ? status : "";
+}
 
 unsigned int MfgUnlock::UnlockedMax()
 {

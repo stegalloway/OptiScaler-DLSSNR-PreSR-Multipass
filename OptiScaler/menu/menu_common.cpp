@@ -3499,6 +3499,17 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
         if (status.ModuleFound && status.PluginCeiling[0] != '\0')
             ImGui::TextWrapped("Streamline plugin ceiling: %s.", status.PluginCeiling);
 
+        if (status.PluginHook[0] != '\0')
+        {
+            const bool blocked = std::string_view(status.PluginHook).starts_with("blocked:");
+            if (blocked)
+                ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "Streamline hook generation %llu: %s.",
+                                   static_cast<unsigned long long>(status.PluginHookGeneration), status.PluginHook);
+            else
+                ImGui::TextWrapped("Streamline hook generation %llu: %s.",
+                                   static_cast<unsigned long long>(status.PluginHookGeneration), status.PluginHook);
+        }
+
         RenderAdaUnlockOptions(config, status, [](const char* tip) { ShowHelpMarker(tip); });
     }
 #endif
