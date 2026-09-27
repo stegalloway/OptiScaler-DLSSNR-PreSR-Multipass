@@ -15,6 +15,61 @@
 static inline uint64_t _lastFrameId[20] = { 0 };
 static inline IUnknown* _lastDev[20] = { 0 };
 
+namespace
+{
+struct DriverMarkerTraceWindow
+{
+    std::mutex mutex;
+    uint64_t startMs = 0;
+    uint64_t simulationStarts = 0;
+    uint64_t presentStarts = 0;
+    uint64_t asyncPresentStarts = 0;
+};
+
+DriverMarkerTraceWindow g_driverMarkerTrace;
+
+void ObserveDriverMarker(bool simulationStart, bool presentStart, bool asyncPresentStart)
+{
+    const uint64_t nowMs = GetTickCount64();
+    std::lock_guard<std::mutex> lock(g_driverMarkerTrace.mutex);
+    if (g_driverMarkerTrace.startMs == 0)
+        g_driverMarkerTrace.startMs = nowMs;
+
+    g_driverMarkerTrace.simulationStarts += simulationStart ? 1 : 0;
+    g_driverMarkerTrace.presentStarts += presentStart ? 1 : 0;
+    g_driverMarkerTrace.asyncPresentStarts += asyncPresentStart ? 1 : 0;
+
+    if (nowMs - g_driverMarkerTrace.startMs < 5000)
+        return;
+
+    const uint64_t totalPresents = g_driverMarkerTrace.presentStarts + g_driverMarkerTrace.asyncPresentStarts;
+    const double syncRatio = g_driverMarkerTrace.simulationStarts != 0
+                                 ? static_cast<double>(g_driverMarkerTrace.presentStarts) /
+                                       static_cast<double>(g_driverMarkerTrace.simulationStarts)
+                                 : 0.0;
+    const double asyncRatio = g_driverMarkerTrace.simulationStarts != 0
+                                  ? static_cast<double>(g_driverMarkerTrace.asyncPresentStarts) /
+                                        static_cast<double>(g_driverMarkerTrace.simulationStarts)
+                                  : 0.0;
+    const double totalRatio = g_driverMarkerTrace.simulationStarts != 0
+                                  ? static_cast<double>(totalPresents) /
+                                        static_cast<double>(g_driverMarkerTrace.simulationStarts)
+                                  : 0.0;
+    LOG_INFO("[FGDRIVERTRACE] kind=marker_window window_ms={} sim_start={} present_start={} "
+             "async_present_start={} total_present={} sync_present_per_sim={:.3f} "
+             "async_present_per_sim={:.3f} total_present_per_sim={:.3f} fg_count={} fg_output={}",
+             nowMs - g_driverMarkerTrace.startMs, g_driverMarkerTrace.simulationStarts,
+             g_driverMarkerTrace.presentStarts, g_driverMarkerTrace.asyncPresentStarts, totalPresents, syncRatio,
+             asyncRatio, totalRatio, ReflexHooks::dlssgFrameCountToGenerate(),
+             magic_enum::enum_name(State::Instance().activeFgOutput));
+
+    g_driverMarkerTrace.startMs = nowMs;
+    g_driverMarkerTrace.simulationStarts = 0;
+    g_driverMarkerTrace.presentStarts = 0;
+    g_driverMarkerTrace.asyncPresentStarts = 0;
+}
+} // namespace
+
 // #define LOG_REFLEX_CALLS
 
 std::optional<TimingEntry> ReflexHooks::timingData[TimingType::TimingTypeCOUNT] {};
@@ -183,6 +238,11 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D_SetLatencyMarker(IUnknown* pDev,
 #endif
 
     _updatesWithoutMarker = 0;
+
+    ObserveDriverMarker(pSetLatencyMarkerParams->markerType == SIMULATION_START,
+                        pSetLatencyMarkerParams->markerType == PRESENT_START ||
+                            pSetLatencyMarkerParams->markerType == OUT_OF_BAND_PRESENT_START,
+                        false);
 
     // LOG_DEBUG("frameID: {}, markerType: {}", pSetLatencyMarkerParams->frameID,
     //           magic_enum::enum_name(pSetLatencyMarkerParams->markerType));
@@ -368,6 +428,9 @@ NvAPI_Status ReflexHooks::hkNvAPI_D3D12_SetAsyncFrameMarker(ID3D12CommandQueue* 
 #endif
 
     _lastAsyncMarkerFrameId = pSetAsyncFrameMarkerParams->frameID;
+
+    ObserveDriverMarker(false, false,
+                        pSetAsyncFrameMarkerParams->markerType == OUT_OF_BAND_PRESENT_START);
 
     // if (pSetAsyncFrameMarkerParams->markerType == OUT_OF_BAND_PRESENT_START)
     //{

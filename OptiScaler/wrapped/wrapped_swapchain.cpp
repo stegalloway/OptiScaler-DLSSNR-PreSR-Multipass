@@ -117,6 +117,71 @@ static std::string TraceUIntValue(bool available, unsigned int value)
     return available ? std::to_string(value) : std::string("n/a");
 }
 
+namespace
+{
+struct RecentDxgiPresent
+{
+    uint64_t seq = 0;
+    uint64_t tickMs = 0;
+    UINT syncInterval = 0;
+    UINT flags = 0;
+    bool present1 = false;
+    bool dlssgObserved = false;
+    bool dlssgEnabled = false;
+    bool localFgActive = false;
+    FGOutput fgOutput = FGOutput::NoFG;
+};
+
+std::mutex g_recentDxgiPresentMutex;
+std::array<RecentDxgiPresent, 12> g_recentDxgiPresents {};
+uint64_t g_recentDxgiPresentSeq = 0;
+
+void RecordDxgiPresent(UINT syncInterval, UINT flags, bool present1)
+{
+    if ((flags & DXGI_PRESENT_TEST) != 0)
+        return;
+
+    RecentDxgiPresent entry {};
+    entry.tickMs = GetTickCount64();
+    entry.syncInterval = syncInterval;
+    entry.flags = flags;
+    entry.present1 = present1;
+    entry.dlssgObserved = StreamlineHooks::hasDlssgFeatureState();
+    entry.dlssgEnabled = StreamlineHooks::isDlssgFeatureEnabled();
+    auto* fg = State::Instance().currentFG;
+    entry.localFgActive = fg != nullptr && fg->IsActive() && !fg->IsPaused();
+    entry.fgOutput = State::Instance().activeFgOutput;
+
+    std::lock_guard<std::mutex> lock(g_recentDxgiPresentMutex);
+    entry.seq = ++g_recentDxgiPresentSeq;
+    g_recentDxgiPresents[entry.seq % g_recentDxgiPresents.size()] = entry;
+}
+
+void DumpRecentDxgiPresents(const char* reason, uintptr_t realSwapchain)
+{
+    std::array<RecentDxgiPresent, 12> snapshot {};
+    uint64_t endSeq = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_recentDxgiPresentMutex);
+        snapshot = g_recentDxgiPresents;
+        endSeq = g_recentDxgiPresentSeq;
+    }
+
+    const uint64_t firstSeq = endSeq > snapshot.size() ? endSeq - snapshot.size() + 1 : 1;
+    for (uint64_t seq = firstSeq; seq <= endSeq; ++seq)
+    {
+        const auto& e = snapshot[seq % snapshot.size()];
+        if (e.seq != seq)
+            continue;
+        LOG_INFO("[FGORDER] kind=recent_dxgi_present reason={} seq={} tick_ms={} real=0x{:X} api={} sync={} flags=0x{:X} "
+                 "dlssg={} local_fg_active={} fg_output={}",
+                 reason, e.seq, e.tickMs, realSwapchain, e.present1 ? "Present1" : "Present", e.syncInterval, e.flags,
+                 StreamlineHooks::dlssgFeatureStateLabel(e.dlssgObserved, e.dlssgEnabled),
+                 e.localFgActive, magic_enum::enum_name(e.fgOutput));
+    }
+}
+} // namespace
+
 // Matched to the known-good 8b102dec Present timing probe. It is retained here
 // only to control for probe-induced pacing in the FG hardening comparison.
 static void ReportMilesFpsWindow(unsigned renderWidth, unsigned renderHeight, unsigned displayWidth,
@@ -931,6 +996,19 @@ ULONG STDMETHODCALLTYPE WrappedIDXGISwapChain4::Release()
 
     if (ret == 0)
     {
+        const auto releaseTelemetry = GetDlssgTraceTelemetry();
+        auto* releaseFg = State::Instance().currentFG;
+        LOG_INFO("[FGORDER] kind=wrapped_swapchain_release tick_ms={} frame={} id={} real=0x{:X} "
+                 "dlssg={} options_seen={} requested={} sent={} sl_active={} local_fg_active={} fg_output={} tid={}",
+                 GetTickCount64(), State::Instance().frameCount, _id, reinterpret_cast<uintptr_t>(_real),
+                 StreamlineHooks::dlssgFeatureStateLabel(),
+                 TraceBoolValue(releaseTelemetry.available, releaseTelemetry.optionsSeen),
+                 TraceUIntValue(releaseTelemetry.available && releaseTelemetry.optionsSeen, releaseTelemetry.requested),
+                 TraceUIntValue(releaseTelemetry.available && releaseTelemetry.optionsSeen, releaseTelemetry.sent),
+                 TraceBoolValue(releaseTelemetry.available && releaseTelemetry.optionsSeen, releaseTelemetry.active),
+                 releaseFg != nullptr && releaseFg->IsActive() && !releaseFg->IsPaused(),
+                 magic_enum::enum_name(State::Instance().activeFgOutput), GetCurrentThreadId());
+        DumpRecentDxgiPresents("wrapped_swapchain_release", reinterpret_cast<uintptr_t>(_real));
 #ifdef USE_LOCAL_MUTEX
         OwnedLockGuard lock(_localMutex, 999);
 #endif
@@ -1015,6 +1093,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present(UINT SyncInterval, UIN
 {
     if (_real == nullptr)
         return DXGI_ERROR_DEVICE_REMOVED;
+
+    RecordDxgiPresent(SyncInterval, Flags, false);
 
 #ifdef USE_LOCAL_MUTEX
     OwnedLockGuard lock(_localMutex, 4);
@@ -1442,6 +1522,8 @@ HRESULT STDMETHODCALLTYPE WrappedIDXGISwapChain4::Present1(UINT SyncInterval, UI
 {
     if (_real1 == nullptr)
         return DXGI_ERROR_DEVICE_REMOVED;
+
+    RecordDxgiPresent(SyncInterval, Flags, true);
 
 #ifdef USE_LOCAL_MUTEX
     OwnedLockGuard lock(_localMutex, 5);

@@ -210,6 +210,10 @@ void* __stdcall NvApiHooks::hkNvAPI_QueryInterface(unsigned int InterfaceId)
     if (InterfaceId == GET_ID(NvAPI_D3D12_SetFlipConfig) &&
         Config::Instance()->DisableFlipMetering.value_or(primaryGpu.vendorId != VendorId::Nvidia))
     {
+        static std::atomic_bool flipConfigTraceLogged = false;
+        if (!flipConfigTraceLogged.exchange(true))
+            LOG_INFO("[FGDRIVERTRACE] kind=set_flip_config action=blocked disable_flip_metering=true tick_ms={}",
+                     GetTickCount64());
         LOG_INFO("FlipMetering is disabled!");
         return nullptr;
     }

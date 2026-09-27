@@ -25,6 +25,69 @@
 
 namespace
 {
+struct RecentDlssgOptionsTrace
+{
+    uint64_t seq = 0;
+    uint64_t tickMs = 0;
+    uint64_t frame = 0;
+    uint32_t viewport = 0;
+    sl::DLSSGMode inputMode = sl::DLSSGMode::eOff;
+    uint32_t inputGenerated = 0;
+    sl::DLSSGMode submittedMode = sl::DLSSGMode::eOff;
+    uint32_t submittedGenerated = 0;
+    sl::Result result = sl::Result::eErrorInvalidParameter;
+    DWORD tid = 0;
+    bool passthrough = false;
+};
+
+std::mutex g_recentDlssgOptionsTraceMutex;
+std::array<RecentDlssgOptionsTrace, 16> g_recentDlssgOptionsTrace {};
+uint64_t g_recentDlssgOptionsTraceSeq = 0;
+
+void RecordDlssgOptionsTrace(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& input,
+                             const sl::DLSSGOptions& submitted, sl::Result result, bool passthrough)
+{
+    RecentDlssgOptionsTrace e {};
+    e.tickMs = GetTickCount64();
+    e.frame = State::Instance().frameCount;
+    e.viewport = static_cast<uint32_t>(viewport);
+    e.inputMode = input.mode;
+    e.inputGenerated = input.numFramesToGenerate;
+    e.submittedMode = submitted.mode;
+    e.submittedGenerated = submitted.numFramesToGenerate;
+    e.result = result;
+    e.tid = GetCurrentThreadId();
+    e.passthrough = passthrough;
+
+    std::lock_guard<std::mutex> lock(g_recentDlssgOptionsTraceMutex);
+    e.seq = ++g_recentDlssgOptionsTraceSeq;
+    g_recentDlssgOptionsTrace[e.seq % g_recentDlssgOptionsTrace.size()] = e;
+}
+
+void DumpDlssgOptionsTrace(const char* reason)
+{
+    std::array<RecentDlssgOptionsTrace, 16> snapshot {};
+    uint64_t endSeq = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_recentDlssgOptionsTraceMutex);
+        snapshot = g_recentDlssgOptionsTrace;
+        endSeq = g_recentDlssgOptionsTraceSeq;
+    }
+
+    const uint64_t firstSeq = endSeq > snapshot.size() ? endSeq - snapshot.size() + 1 : 1;
+    for (uint64_t seq = firstSeq; seq <= endSeq; ++seq)
+    {
+        const auto& e = snapshot[seq % snapshot.size()];
+        if (e.seq != seq)
+            continue;
+        LOG_INFO("[FGORDER] kind=dlssg_options reason={} seq={} tick_ms={} frame={} viewport={} path={} "
+                 "input_mode={} input_generated={} submitted_mode={} submitted_generated={} result={} tid={}",
+                 reason, e.seq, e.tickMs, e.frame, e.viewport, e.passthrough ? "passthrough" : "forward",
+                 magic_enum::enum_name(e.inputMode), e.inputGenerated, magic_enum::enum_name(e.submittedMode),
+                 e.submittedGenerated, magic_enum::enum_name(e.result), e.tid);
+    }
+}
+
 bool SameHdrUiResource(const MfgHdrUiDiagnostics::ResourceObservation& a,
                        const MfgHdrUiDiagnostics::ResourceObservation& b)
 {
@@ -183,8 +246,13 @@ void StreamlineHooks::observeDlssgFeatureStateMessage(const char* msg)
     dlssgFeatureStateObserved.store(true, std::memory_order_release);
 
     if (!wasObserved || wasEnabled != enabled)
-        LOG_INFO("[FSTRACE] kind=feature_state state={} tid={}", enabled ? "loaded" : "unloaded",
+    {
+        LOG_INFO("[FSTRACE] kind=feature_state state={} tick_ms={} frame={} tid={}",
+                 enabled ? "loaded" : "unloaded", GetTickCount64(), State::Instance().frameCount,
                  GetCurrentThreadId());
+        if (!enabled)
+            DumpDlssgOptionsTrace("feature_unloaded");
+    }
 }
 
 void StreamlineHooks::streamlineLogCallback(sl::LogType type, const char* msg)
@@ -1375,6 +1443,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
             return sl::Result::eErrorInvalidParameter;
 #endif
         const auto result = o_slDLSSGSetOptions(viewport, options);
+        RecordDlssgOptionsTrace(viewport, options, options, result, true);
 #if defined(OPTISCALER_RTX40_MFG)
         MfgUnlock::RecordSetOptions(options.numFramesToGenerate, options.numFramesToGenerate,
                                    options.mode != sl::DLSSGMode::eOff, static_cast<unsigned>(result));
@@ -1416,6 +1485,7 @@ sl::Result StreamlineHooks::hkslDLSSGSetOptions(const sl::ViewportHandle& viewpo
         }
 #endif
         const auto result = o_slDLSSGSetOptions(viewport, newOptions);
+        RecordDlssgOptionsTrace(viewport, options, newOptions, result, false);
 #if defined(OPTISCALER_RTX40_MFG)
         MfgUnlock::RecordSetOptions(options.numFramesToGenerate, newOptions.numFramesToGenerate,
                                    newOptions.mode != sl::DLSSGMode::eOff, static_cast<unsigned>(result));
