@@ -188,6 +188,36 @@ Interpretation:
 Do not alter `RenderMotionScale`, NRSTAB, automatic exposure, or descriptor capacity during this comparison. Those variables are already entangled with earlier debugging and would make the result ambiguous.
 
 
+### Corrected STEP1 classification and multiplier sweep
+
+The 28 September `STEP1-NOFG-invalid-for-smear.log` filename is historical and misleading. The run must **not** be treated as proven FG-off.
+
+Evidence:
+- requested `OverrideInterpolationCount=2`;
+- quality mode 5 failed with `required locally generated kernel tables absent; experimental backend disabled`;
+- PureDark subsequently continued to call the DLSS-G bridge (`slDLSSGGetState` / `slDLSSGSetOptions`);
+- the bridge later bypassed the stale Streamline 0.0.0 version gate.
+
+The unlock failure disables the attempted Ada MFG path beyond native capability; it does not itself disable DLSS-G. No direct delivered frame-count telemetry was logged. Classify the run as:
+
+**native 2X likely, unconfirmed**
+
+This matters because that run produced the strongest positive visual report (no visible smearing). It therefore supports a multiplier-dependent FG quality/pacing hypothesis more strongly than an “FG itself is always bad” conclusion.
+
+The historical `cffccbca` + always-on K1 NRSTAB reference is confirmed as **4X requested** (`OverrideInterpolationCount=3`) with its original unlock successfully applied.
+
+For horse-edge blur and bottom-line analysis, use a matched multiplier sweep with all NR variables fixed:
+
+1. **2X** (`OverrideInterpolationCount=1`, or native 2X with MFG unlock not required)
+2. **3X** (`OverrideInterpolationCount=2`)
+3. **4X** (`OverrideInterpolationCount=3`), including the prepared flip-metering mitigation state where appropriate
+4. **FG off** final reference
+
+Interpretation:
+- clean at 2X and progressively worse at 3X/4X => Ada MFG interpolation/pacing/multiplier issue; prefer 2X or 3X plus the pacing workaround that tests cleanly;
+- artifact already present at 2X => investigate FG itself or FG/NR interaction using the FG-off and Apply-model-off controls;
+- do not change NR/NRSTAB/exposure/spatial/motion-scale settings inside this sweep.
+
 ### Auto-exposure trim verification before any new known-good checkpoint
 
 The saved RDR2 INIs and 23:06 startup log currently agree on `AutoExposureTrim=6.126000`, while the user recalls accepting automatic HDR exposure at the menu default of 5.
