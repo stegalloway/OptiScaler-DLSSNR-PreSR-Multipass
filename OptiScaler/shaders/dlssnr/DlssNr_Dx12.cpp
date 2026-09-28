@@ -160,7 +160,8 @@ bool DlssNr_Dx12::DispatchCompute(ID3D12GraphicsCommandList* InCmdList, const Dl
 
     const bool reuse = immutableSlot && *immutableSlot != UINT32_MAX;
     const auto acquired = _descriptorSlots.Acquire(InCmdList, immutableSlot);
-    if (!acquired) return false;
+    if (!acquired)
+        return false;
     const uint32_t slot = *acquired;
 
     FrameDescriptorHeap& currentHeap = _frameHeaps[slot];
@@ -203,7 +204,6 @@ bool DlssNr_Dx12::DispatchCompute(ID3D12GraphicsCommandList* InCmdList, const Dl
         // buffer are initialized; a failed setup must make the caller retry.
         if (immutableSlot && !_descriptorSlots.PublishImmutable(InCmdList, slot, *immutableSlot))
             return false;
-
     }
 
     ID3D12DescriptorHeap* heaps[] = { currentHeap.GetHeapCSU() };

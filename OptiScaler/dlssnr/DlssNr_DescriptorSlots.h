@@ -50,17 +50,20 @@ template<unsigned Capacity> class DescriptorSlots
   public:
     std::optional<uint32_t> Acquire(ID3D12GraphicsCommandList* commands, const uint32_t* immutable = nullptr)
     {
-        if (!commands) return {};
+        if (!commands)
+            return {};
         commands = Identity(commands);
         std::lock_guard lock(mutex);
         Collect();
         if (immutable && *immutable != UINT32_MAX)
         {
             const auto index = *immutable & SlotMask, generation = *immutable >> SlotBits;
-            if (index >= Capacity || generation == 0) return {};
+            if (index >= Capacity || generation == 0)
+                return {};
             const auto& slot = slots[index];
             if (slot.generation != generation || !slot.recording || !slot.recording->open ||
-                slot.recording->commands != commands) return {};
+                slot.recording->commands != commands)
+                return {};
             if (!slot.recording->lifetime.HasOpenRecording(commands))
             {
                 slot.recording->open = false;
@@ -89,7 +92,8 @@ template<unsigned Capacity> class DescriptorSlots
                     if (!candidate->active) { recording = candidate; break; }
                 if (!recording)
                 {
-                    if (recordings.size() == Capacity) return {};
+                    if (recordings.size() == Capacity)
+                        return {};
                     recording = std::make_shared<Recording>();
                     recordings.push_back(recording);
                 }
