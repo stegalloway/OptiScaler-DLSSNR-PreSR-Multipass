@@ -1,6 +1,9 @@
 #include "pch.h"
 #include <dlssnr/DlssNr_StreamlinePicture.h>
 #include <dlssnr/DlssNr_FinishedPicturePolicy.h>
+#include "DlssNr_Rdr2Clock.h"
+#include "DlssNr_Rdr2Epoch.h"
+#include <hooks/Rdr2PureDark.h>
 #include "DlssNr_Dx12_State.h"
 #include <atomic>
 #include <list>
@@ -12,6 +15,9 @@
 
 namespace
 {
+DlssNrRdr2Clock rdr2NrClock;
+std::atomic_bool rdr2NrClockAnnounced { false };
+
 std::recursive_mutex nrOwnersMutex;
 std::vector<DlssNr_Dx12*> nrOwners;
 std::atomic_uint nrCaptureOutstanding { 0 };
@@ -675,6 +681,44 @@ std::string DlssNr_Dx12::FinishedStatus() { return _state->FinishedPictureStatus
 std::string DlssNr_Dx12::DeferredStatus() { return _state->DeferredDlssStatus(); }
 namespace DlssNr
 {
+unsigned long long SubmissionEpoch_Dx12(ID3D12GraphicsCommandList* commandList)
+{
+    if (!IsRdr2PureDarkCoexistence() || !commandList || !Config::Instance()->DlssNrEnabled.value_or_default())
+        return State::Instance().frameCount;
+    const auto epoch = rdr2NrClock.Register(static_cast<ID3D12CommandList*>(commandList));
+    if (!rdr2NrClockAnnounced.exchange(true))
+        LOG_INFO("RDR2 PureDark coexistence: NR uses private submitted-command-list epoch");
+    if (rdr2NrClock.Overflows())
+    {
+        static std::atomic_bool warned { false };
+        if (!warned.exchange(true))
+            LOG_WARN("RDR2 NR epoch: pending cap reached; dropped recordings cleared without advancing submission");
+    }
+    return epoch;
+}
+
+void NoteRdr2CommandListReset(ID3D12CommandList* commandList, bool succeeded)
+{
+    if (IsRdr2PureDarkCoexistence())
+        rdr2NrClock.ResetRecording(commandList, succeeded);
+}
+
+void NoteRdr2CommandListsSubmitted(unsigned int count, ID3D12CommandList* const* commandLists)
+{
+    if (!IsRdr2PureDarkCoexistence())
+        return;
+    const auto epoch = rdr2NrClock.Submitted(count, commandLists);
+    if (epoch && (epoch <= 3 || epoch % 600 == 0))
+        LOG_INFO("RDR2 PureDark coexistence: submitted DLSS command list, NR epoch {}", epoch);
+}
+
+unsigned long long ScanTickEpoch_Dx12(ID3D12GraphicsCommandList* commandList)
+{
+    if (!IsRdr2PureDarkCoexistence() || !commandList || !Config::Instance()->DlssNrEnabled.value_or_default())
+        return State::Instance().frameCount;
+    return rdr2NrClock.ScanTick(static_cast<ID3D12CommandList*>(commandList));
+}
+
 void FinishedPictureResetCommandList(ID3D12CommandList* cmd)
 {
     if (::State::Instance().isShuttingDown)
@@ -827,7 +871,11 @@ bool Shutdown()
                     owner->FinishSubmitted();
             }
             if (nrOwners.empty())
+            {
+                rdr2NrClock.Clear();
+                rdr2NrClockAnnounced.store(false);
                 return true;
+            }
         }
         // Submission/reset hooks must be able to make progress while we drain.
         Sleep(1);

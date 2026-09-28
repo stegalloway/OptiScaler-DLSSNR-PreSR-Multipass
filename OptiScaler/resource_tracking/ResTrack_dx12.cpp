@@ -1,6 +1,8 @@
 #include "pch.h"
 
 #include <dlssnr/DlssNr.h>
+#include <hooks/Rdr2PureDark.h>
+#include <shaders/dlssnr/DlssNr_Rdr2Epoch.h>
 
 #include "ResTrack_dx12.h"
 
@@ -737,6 +739,7 @@ static void STDMETHODCALLTYPE hkNrExecuteCommandLists(ID3D12CommandQueue* queue,
 {
     auto nrSubmission = DlssNr::BeginFinishedPictureSubmission(count, lists);
     o_ExecuteCommandLists(queue, count, lists);
+    DlssNr::NoteRdr2CommandListsSubmitted(count, lists);
     if (!nrSubmission.CompleteNoThrow(queue))
         LOG_ERROR("DLSS-NR submission bookkeeping failed after ExecuteCommandLists; affected ownership remains quarantined");
 }
@@ -2601,6 +2604,17 @@ void ResTrack_Dx12::HookLateNrQueue(ID3D12Device* device)
 {
     static std::mutex hookMutex;
     std::lock_guard<std::mutex> lock(hookMutex);
+    if (!device)
+        return;
+    if (IsRdr2PureDarkCoexistence())
+    {
+        ID3D12Device* realDevice = nullptr;
+        if (Util::CheckForRealObject("RDR2 PureDark late-NR device", device, (IUnknown**) &realDevice) && realDevice)
+        {
+            device = realDevice;
+            LOG_INFO("RDR2 PureDark coexistence: late-NR tracking uses unwrapped D3D12 device");
+        }
+    }
     HookNrQueue(device);
     if (o_LateReset) return;
     ID3D12CommandAllocator* allocator = nullptr;

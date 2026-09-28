@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "D3D12_Hooks.h"
 #include "Rdr2PureDark.h"
+#include <shaders/dlssnr/DlssNr_Rdr2Epoch.h>
 
 #include <Util.h>
 #include <Config.h>
@@ -65,6 +66,7 @@ static bool _d3d12Captured = false;
 static LUID _lastAdapterLuid = {};
 
 // Common
+using PFN_Rdr2Reset = rewrite_signature<decltype(&ID3D12GraphicsCommandList::Reset)>::type;
 using PFN_SetDescriptorHeaps = rewrite_signature<decltype(&ID3D12GraphicsCommandList::SetDescriptorHeaps)>::type;
 using PFN_SetPipelineState = rewrite_signature<decltype(&ID3D12GraphicsCommandList::SetPipelineState)>::type;
 
@@ -208,6 +210,7 @@ static std::shared_mutex rootSigParameterCountMutex;
 static ankerl::unordered_dense::map<ID3D12RootSignature*, UINT> rootSigParameterCount;
 
 static bool isUpscalerActive = false;
+static PFN_Rdr2Reset o_Rdr2Reset = nullptr;
 
 // Intel Atomic Extension
 struct UE_D3D12_RESOURCE_DESC
@@ -387,6 +390,15 @@ static void hkSetPipelineState(ID3D12GraphicsCommandList* commandList, ID3D12Pip
     }
 
     s_SetPipelineState.o_earlyHook(commandList, pPipelineState);
+}
+
+VALIDATE_HOOK(hkRdr2Reset, PFN_Rdr2Reset)
+static HRESULT hkRdr2Reset(ID3D12GraphicsCommandList* commandList, ID3D12CommandAllocator* allocator,
+                           ID3D12PipelineState* initialState)
+{
+    const HRESULT result = o_Rdr2Reset(commandList, allocator, initialState);
+    DlssNr::NoteRdr2CommandListReset(static_cast<ID3D12CommandList*>(commandList), SUCCEEDED(result));
+    return result;
 }
 
 VALIDATE_HOOK(hkSetDescriptorHeaps, PFN_SetDescriptorHeaps)
@@ -1326,6 +1338,8 @@ static void HookToCommandList(ID3D12Device* InDevice)
             const bool extendedRestoreSignature = config->ExtendedStateRestore.value_or_default();
             const bool persistentBindings = config->FGHudfixPersistentBindings.value_or_default();
 
+            if (IsRdr2PureDarkCoexistence())
+                o_Rdr2Reset = (PFN_Rdr2Reset) pVTable[10];
             s_SetPipelineState.o_earlyHook = (PFN_SetPipelineState) pVTable[25];
             s_SetDescriptorHeaps.o_earlyHook = (PFN_SetDescriptorHeaps) pVTable[28];
             s_SetComputeRootSignature.o_earlyHook = (PFN_SetComputeRootSignature) pVTable[29];
@@ -1337,7 +1351,7 @@ static void HookToCommandList(ID3D12Device* InDevice)
             s_SetComputeRootShaderResourceView.o_earlyHook = (PFN_SetComputeRootShaderResourceView) pVTable[39];
             s_SetComputeRootUnorderedAccessView.o_earlyHook = (PFN_SetComputeRootUnorderedAccessView) pVTable[41];
 
-            if (s_SetPipelineState.o_earlyHook || s_SetDescriptorHeaps.o_earlyHook ||
+            if (o_Rdr2Reset || s_SetPipelineState.o_earlyHook || s_SetDescriptorHeaps.o_earlyHook ||
                 s_SetComputeRootSignature.o_earlyHook || s_SetGraphicsRootSignature.o_earlyHook ||
                 s_SetComputeRootDescriptorTable.o_earlyHook || s_SetComputeRoot32BitConstant.o_earlyHook ||
                 s_SetComputeRoot32BitConstants.o_earlyHook || s_SetComputeRootConstantBufferView.o_earlyHook ||
@@ -1345,6 +1359,9 @@ static void HookToCommandList(ID3D12Device* InDevice)
             {
                 DetourTransactionBegin();
                 DetourUpdateThread(GetCurrentThread());
+
+                if (o_Rdr2Reset != nullptr)
+                    DetourAttach(&(PVOID&) o_Rdr2Reset, hkRdr2Reset);
 
                 if (s_SetPipelineState.o_earlyHook != nullptr && extendedRestoreSignature)
                     DetourAttach(&(PVOID&) s_SetPipelineState.o_earlyHook, hkSetPipelineState);
@@ -1396,6 +1413,7 @@ static void HookToCommandList(ID3D12Device* InDevice)
                 }
                 else
                 {
+                    o_Rdr2Reset = nullptr;
                     s_SetPipelineState.o_earlyHook = nullptr;
                     s_SetDescriptorHeaps.o_earlyHook = nullptr;
                     s_SetComputeRootSignature.o_earlyHook = nullptr;
@@ -1428,6 +1446,12 @@ static void UnhookAll()
 {
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
+
+    if (o_Rdr2Reset != nullptr)
+    {
+        DetourDetach(&(PVOID&) o_Rdr2Reset, hkRdr2Reset);
+        o_Rdr2Reset = nullptr;
+    }
 
     if (s_SetComputeRootSignature.o_earlyHook != nullptr)
     {
