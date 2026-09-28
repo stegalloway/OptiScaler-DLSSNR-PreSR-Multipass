@@ -2,6 +2,7 @@
 #include <atomic>
 #include <dlssnr/DlssNr_NrStabStatus.h>
 #include "DlssNr_Dx12_State.h"
+#include <hooks/Rdr2PureDark.h>
 
 auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* colour, ID3D12Resource* depth, ID3D12Resource* motion,
              ID3D12Resource* output, const DlssNrFrameInfo& frame, ID3D12CommandQueue* timingQueue) -> void
@@ -230,6 +231,8 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     if (!PrepareRunModels(cmdList, device, frame, desc, { width, height }, { modelWidth, modelHeight },
                           workScale, requestedPasses, spatial))
     {
+        if (IsRdr2PureDarkCoexistence())
+            LOG_INFO("[RDR2 NR DIAG] NRSTAB UI -> INELIGIBLE: PrepareRunModels failed");
         nr.stabHistoryValid = false;
         nr.stabPrevBaseValid = false;
         if (nr.stabMvReadbackPending) nr.stabMvIgnorePending = true;
@@ -1802,6 +1805,8 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
         ++nr.successfulDispatches;
     else
     {
+        if (IsRdr2PureDarkCoexistence())
+            LOG_INFO("[RDR2 NR DIAG] NRSTAB UI -> INELIGIBLE: composition failed");
         nr.stabHistoryValid = false;
         nr.stabPrevBaseValid = false;
         if (nr.stabMvReadbackPending) nr.stabMvIgnorePending = true;

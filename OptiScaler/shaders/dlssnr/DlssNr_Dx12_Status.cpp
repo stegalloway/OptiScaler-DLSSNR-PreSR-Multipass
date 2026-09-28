@@ -1,10 +1,13 @@
 #include "pch.h"
 #include "DlssNr_Dx12_State.h"
+#include <hooks/Rdr2PureDark.h>
 
 auto DlssNr_Dx12::State::ReportSkipOnce(const char* reason) -> void
 {
 
-    if (seen.insert(reason).second)
+    if (IsRdr2PureDarkCoexistence())
+        LOG_INFO("[RDR2 NR DIAG] DLSS-NR did not run: {}", reason);
+    else if (seen.insert(reason).second)
         LOG_INFO("DLSS-NR did not run: {}", reason);
 }
 
