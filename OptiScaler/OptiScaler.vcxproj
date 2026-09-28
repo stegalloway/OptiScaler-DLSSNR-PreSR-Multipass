@@ -954,6 +954,9 @@ copy NUL &quot;$(OutDir)a\!! EXTRACT ALL FILES TO GAME FOLDER !!&quot; /Y</Comma
     <ClInclude Include="shaders\dlssnr\DlssNr_GpuTime.h" />
     <ClInclude Include="shaders\dlssnr\DlssNr_Guides.h" />
     <ClInclude Include="shaders\dlssnr\DlssNr_SeamClock.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_Rdr2Clock.h" />
+    <ClInclude Include="shaders\dlssnr\DlssNr_Rdr2Epoch.h" />
+    <ClInclude Include="hooks\Rdr2PureDark.h" />
     <ClCompile Include="shaders\dlssnr\DlssNr_Upscaler_Dx12.cpp" />
     <ClInclude Include="shaders\dlssnr\DlssNr_Upscaler_Dx12.h" />
   </ItemGroup>
