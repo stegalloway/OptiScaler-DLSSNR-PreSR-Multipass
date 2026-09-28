@@ -1879,6 +1879,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             cfg->StreamlineSpoofing.set_volatile_value(false);
             cfg->DxgiSpoofing.set_volatile_value(false);
             cfg->UseFakenvapi.set_volatile_value(false);
+            cfg->OverlayMenu.set_volatile_value(false);
+            LOG_INFO("RDR2 PureDark UI: OptiScaler overlay disabled; PureDark End menu and Numpad * FG toggle remain "
+                     "native");
 
 #if defined(OPTISCALER_RTX40_MFG)
             LOG_INFO("RDR2 PureDark coexistence: built-in RTX40 MFG unlock is {}",
