@@ -30,8 +30,9 @@
 
 // Bounded descriptor capacity; actual recording/fence completion controls reuse.
 // A model chain reuses its two immutable clamp bindings regardless of pass count.
-// A maximal spatial frame uses 11 codec dispatches across twelve queued frames.
-#define DLSSNR_NUM_OF_HEAPS 132
+// A maximal spatial frame uses 11 codec dispatches. RDR2 can keep materially more than twelve
+// command-list recordings in flight; 264 is a diagnostic 2x capacity while that peak is measured.
+#define DLSSNR_NUM_OF_HEAPS 264
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
 {
