@@ -187,6 +187,31 @@ Interpretation:
 
 Do not alter `RenderMotionScale`, NRSTAB, automatic exposure, or descriptor capacity during this comparison. Those variables are already entangled with earlier debugging and would make the result ambiguous.
 
+
+### Live-only bottom horizontal line: FG pacing track
+
+User evidence now separates the bottom horizontal line from NR:
+
+- it appears only with FG enabled;
+- it has been present across RDR2 builds;
+- it is not visible in DVR recordings;
+- the 20 September recording review could not independently isolate it from captured frames.
+
+Earlier flip-metering TEST1/TEST2 files do not resolve this: TEST1 was run with FG off, and TEST2 was prepared but not completed as a valid FG-on pacing test.
+
+Treat the line as an FG presentation/pacing issue. Do not change NR or NRSTAB to target it.
+
+First valid control at 4X:
+- `OverrideInterpolationCount=3`;
+- `DisableFlipMetering=true`;
+- `AdaFlipMeteringPatch=true`;
+- all NR/NRSTAB/exposure/scaling settings held fixed.
+
+If this removes the line, keep it as an RDR2/Ada-MFG configuration recommendation rather than changing global code defaults. If it does not, test NVIDIA VSync On with G-SYNC and no driver FPS limit; then use 2X as the native-Ada FG reference.
+
+Separate open engineering work remains: explicit RDR2 Reset-path descriptor-slot release at the authoritative Reset seam, and diagnosis of the mid-session spatial-packing failure/fallback.
+
+
 ## Backup and rollback
 
 Pre-port backup:
