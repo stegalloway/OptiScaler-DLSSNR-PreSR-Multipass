@@ -113,6 +113,80 @@ Interpretation:
 - true/false similar but apply-model-off clears it: NR output is causal; any motion fade belongs on main behind a switch.
 - apply-model-off does not clear it: investigate timing/PureDark FG instead of changing NR.
 
+
+## Final 2026-09-28 production state
+
+Final production source:
+
+- branch: `rdr2/puredark-on-v085`
+- production HEAD: `03db041bed5456a010abdfeea9d43ab82ce13395`
+- production DLL SHA-256: `1B768A4E068D669B33C0F753F59F29D815E3629987D4EDF88F031A1629E1136A`
+- PureDark DLSS-G provider remains 310.9.1.0 and unchanged
+- the user's live RDR2 INI is preserved separately from source defaults
+
+Accepted live behaviour:
+
+- PureDark retains DXGI/Streamline/Reflex/presentation/FG ownership.
+- The RDR2 private NR submission epoch advances normally.
+- NRSTAB reaches and remains `ACTIVE` with valid history in steady state.
+- RDR2 motion guides are 2293x960 for 3440x1440 output and the model reports `motion_to_output=1.500218x1.5`.
+- `RenderMotionScale` remains enabled through the main default/auto setting and is accepted for RDR2.
+- Automatic HDR exposure (`WhitePointSource=3`) was rechecked live and accepted by the user.
+- No device removal, blocked DLSS-G hook, `1E7`, `WAIT_TIMEOUT`, or `FGWAIT` was observed in the accepted validation runs.
+
+### NR descriptor-capacity finding and production fix
+
+The visible NR/NRSTAB flicker was traced to real colour-encode failures caused by bounded descriptor-pool exhaustion, not to a separate auxiliary NGX feature.
+
+Diagnostic evidence at the original 132-slot bound:
+
+- every captured failure reported `dispatch_reason=slot-acquire`;
+- every captured failure reported `slot_reason=slot-pool-exhausted`;
+- failures occurred at `slots_in_use=132`;
+- successful and failed calls belonged to the same NGX feature (`feature=1000000`), same post-upscale path (`before=0`), and same 3440x1440 colour/output extent;
+- NRSTAB increased normal descriptor pressure;
+- automatic HDR exposure adds exposure-meter dispatch work and increased pressure further;
+- pool occupancy could fall again when load fell, so the evidence did not match a simple monotonic descriptor leak.
+
+Production change:
+
+- `DLSSNR_NUM_OF_HEAPS` is increased from **132 to 264** for this RDR2/PureDark branch.
+- No encode-failure suppression was added.
+- No NRSTAB invalidation behaviour was hidden or bypassed.
+- Temporary slot-pressure and RDR2 NR diagnostic logging used to prove the failure mode was removed from the production DLL.
+
+The 264-slot diagnostic run was visually stable in the user's practical testing and removed the original pronounced flicker. Telemetry still observed two short windows that reached the 264-slot ceiling, so 264 is retained as the tested production value rather than being described as a mathematically proven maximum.
+
+## Open image-clarity regression: horse artifact and bottom-edge line
+
+The final testing also produced a separate **unresolved image-clarity regression**:
+
+- artifacting around the horse was more pronounced than in earlier RDR2 testing;
+- the horizontal line along the bottom of the screen was also more pronounced;
+- these observations concern image clarity/artifact severity, not the earlier descriptor-exhaustion flicker.
+
+The same run changed the PureDark frame-generation multiplier from the earlier **3X** test state to **4X**. The log explicitly records:
+
+`MFG unlock: 4X requested with hardware flip metering still on.`
+
+That multiplier change is a material confounder. The artifact increase must **not** currently be attributed to the 264-slot capacity change, NRSTAB, automatic exposure, or `RenderMotionScale`.
+
+Required next control before changing image-quality code:
+
+1. Use the same save/route/camera/time/weather and current accepted NR settings.
+2. Run at **3X**.
+3. Repeat immediately at **4X**.
+4. Change only the FG multiplier between the two runs.
+5. Compare the horse boundary and the bottom horizontal line.
+
+Interpretation:
+
+- artifact clearly worse only at 4X: investigate PureDark/DLSS-G interpolation/presentation at the higher multiplier first;
+- artifact similar at 3X and 4X: investigate NR/NRSTAB/image-composition changes next;
+- if needed, add an FG-off control with the same NR settings before making any NR image-quality change.
+
+Do not alter `RenderMotionScale`, NRSTAB, automatic exposure, or descriptor capacity during this comparison. Those variables are already entangled with earlier debugging and would make the result ambiguous.
+
 ## Backup and rollback
 
 Pre-port backup:
