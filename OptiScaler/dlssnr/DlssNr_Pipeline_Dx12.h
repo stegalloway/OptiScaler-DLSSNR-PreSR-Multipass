@@ -39,8 +39,10 @@ bool CanRunBeforeUpscale_Dx12(NVSDK_NGX_Parameter* parameters);
 ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
                                NVSDK_NGX_Parameter* parameters, bool beforeUpscale, unsigned int featureFlags,
                                ID3D12CommandQueue* timingQueue = nullptr, bool interop = false,
-                               bool rayReconstruction = false, uint64_t submissionEpoch = 0);
+                               bool rayReconstruction = false, uint64_t submissionEpoch = 0,
+                               uint32_t callerFeatureId = 0);
 ID3D12Resource* PrepareDlssNrInput(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
                                    NVSDK_NGX_Parameter* parameters, unsigned int featureFlags,
                                    ID3D12CommandQueue* timingQueue = nullptr, bool interop = false,
-                                   bool rayReconstruction = false, uint64_t submissionEpoch = 0);
+                                   bool rayReconstruction = false, uint64_t submissionEpoch = 0,
+                                   uint32_t callerFeatureId = 0);

@@ -97,6 +97,7 @@ struct DlssNr_Dx12::State
     unsigned pipelineCaptureRemaining = 0;
 
     unsigned long long frames = 0;
+    ULONGLONG rdr2DiagLastSuccessMs = 0;
 
     // Logical frame identity for deferred pairing; feature readiness keeps the raw submission counter.
     DlssNrSeamClock seamClock;

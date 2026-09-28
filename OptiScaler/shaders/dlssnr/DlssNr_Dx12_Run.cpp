@@ -329,6 +329,21 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     targetState = encoded.targetState;
     if (!encodeSucceeded)
     {
+        if (IsRdr2PureDarkCoexistence())
+        {
+            const auto diag = shader.TakeDispatchDiagnostics(true);
+            const auto colorDesc = colour->GetDesc();
+            const auto outputDesc = output->GetDesc();
+            LOG_INFO("[RDR2 NR CALL] result=encode-failed cmd=0x{:X} feature={} colour={}x{} output={}x{} before={} "
+                     "epoch={} wp_source={} nr_failed={} dispatch_reason={} slot_reason={} slots_in_use={} "
+                     "active_recordings={} open_recordings={} failed_acquires_since_last={}",
+                     reinterpret_cast<uintptr_t>(cmdList), frame.CallerFeatureId, colorDesc.Width, colorDesc.Height,
+                     outputDesc.Width, outputDesc.Height, frame.BeforeUpscale ? 1 : 0, frame.SubmissionEpoch,
+                     cfg.DlssNrWhitePointSource.value_or_default(), nr.failed ? 1 : 0, diag.reason,
+                     DlssNr::DescriptorSlots<DLSSNR_NUM_OF_HEAPS>::FailureName(diag.slots.lastFailure),
+                     diag.slots.slotsInUse, diag.slots.activeRecordings, diag.slots.openRecordings,
+                     diag.slots.failedAcquires);
+        }
         nr.reset = true;
         if (spatial)
         {
@@ -1802,7 +1817,30 @@ auto DlssNr_Dx12::State::Run(ID3D12GraphicsCommandList* cmdList, ID3D12Resource*
     // only the active rectangle and restores both resources before DLSS consumes the image.
     FinishColor(compositionSucceeded);
     if (compositionSucceeded)
+    {
         ++nr.successfulDispatches;
+        if (IsRdr2PureDarkCoexistence())
+        {
+            const ULONGLONG now = GetTickCount64();
+            if (rdr2DiagLastSuccessMs == 0 || now - rdr2DiagLastSuccessMs >= 5000)
+            {
+                rdr2DiagLastSuccessMs = now;
+                const auto diag = shader.TakeDispatchDiagnostics(true);
+                const auto colorDesc = colour->GetDesc();
+                const auto outputDesc = output->GetDesc();
+                LOG_INFO(
+                    "[RDR2 NR CALL] result=success cmd=0x{:X} feature={} colour={}x{} output={}x{} before={} epoch={} "
+                    "wp_source={} slots_in_use={} active_recordings={} open_recordings={} "
+                    "failed_acquires_since_last={} "
+                    "slot_last_failure={}",
+                    reinterpret_cast<uintptr_t>(cmdList), frame.CallerFeatureId, colorDesc.Width, colorDesc.Height,
+                    outputDesc.Width, outputDesc.Height, frame.BeforeUpscale ? 1 : 0, frame.SubmissionEpoch,
+                    cfg.DlssNrWhitePointSource.value_or_default(), diag.slots.slotsInUse, diag.slots.activeRecordings,
+                    diag.slots.openRecordings, diag.slots.failedAcquires,
+                    DlssNr::DescriptorSlots<DLSSNR_NUM_OF_HEAPS>::FailureName(diag.slots.lastFailure));
+            }
+        }
+    }
     else
     {
         if (IsRdr2PureDarkCoexistence())
