@@ -98,7 +98,6 @@ struct DlssNrFrameInfo
     // the DX11/Vulkan bridges use their successfully submitted frame counter. A feature created in an
     // epoch is never evaluated until this value changes.
     unsigned long long SubmissionEpoch = 0;
-    unsigned int CallerFeatureId = 0; // Diagnostic identity; zero if the caller has no NGX feature handle.
     float FrameTimeMs = 16.67f;
 
     // The scale the game multiplied its buffer by for float precision, which DLSS is told so it can

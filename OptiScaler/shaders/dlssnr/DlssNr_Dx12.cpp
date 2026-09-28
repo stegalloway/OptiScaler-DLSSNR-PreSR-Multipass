@@ -154,21 +154,13 @@ bool DlssNr_Dx12::DispatchCompute(ID3D12GraphicsCommandList* InCmdList, const Dl
                                  ID3D12Resource* InMotion, ID3D12Resource* InPrevEdit,
                                  ID3D12Resource* OutTarget, ID3D12Resource* OutKeep, uint32_t* immutableSlot)
 {
-    _lastDispatchFailure = DispatchFailure::None;
     _state->lifetime.Record(InCmdList);
     if (!_init || !pipeline || !InCmdList || !_device || !InSource || !OutTarget)
-    {
-        _lastDispatchFailure = DispatchFailure::MissingResourceOrState;
         return false;
-    }
 
     const bool reuse = immutableSlot && *immutableSlot != UINT32_MAX;
     const auto acquired = _descriptorSlots.Acquire(InCmdList, immutableSlot);
-    if (!acquired)
-    {
-        _lastDispatchFailure = DispatchFailure::SlotAcquire;
-        return false;
-    }
+    if (!acquired) return false;
     const uint32_t slot = *acquired;
 
     FrameDescriptorHeap& currentHeap = _frameHeaps[slot];
@@ -203,7 +195,6 @@ bool DlssNr_Dx12::DispatchCompute(ID3D12GraphicsCommandList* InCmdList, const Dl
 
         if (!CreateConstantsBuffer(_device, _constantBuffers[slot], InConstants, currentHeap.GetCbvCPU(0)))
         {
-            _lastDispatchFailure = DispatchFailure::ConstantBuffer;
             LOG_ERROR("[{0}] Failed to create a constants buffer", _name);
             return false;
         }
@@ -211,10 +202,8 @@ bool DlssNr_Dx12::DispatchCompute(ID3D12GraphicsCommandList* InCmdList, const Dl
         // Do not expose immutable reuse until every descriptor and the constant
         // buffer are initialized; a failed setup must make the caller retry.
         if (immutableSlot && !_descriptorSlots.PublishImmutable(InCmdList, slot, *immutableSlot))
-        {
-            _lastDispatchFailure = DispatchFailure::ImmutablePublish;
             return false;
-        }
+
     }
 
     ID3D12DescriptorHeap* heaps[] = { currentHeap.GetHeapCSU() };
@@ -437,29 +426,6 @@ void DlssNr_Dx12::SetBufferState(ID3D12GraphicsCommandList* cmdList, D3D12_RESOU
 
 ID3D12Resource* DlssNr_Dx12::Buffer() { return _state->buffer; }
 bool DlssNr_Dx12::CanRender() const { return _init && _state->buffer != nullptr; }
-DlssNr_Dx12::DispatchDiagnostics DlssNr_Dx12::TakeDispatchDiagnostics(bool resetSlotFailures)
-{
-    const char* reason = "none";
-    switch (_lastDispatchFailure)
-    {
-    case DispatchFailure::None:
-        reason = "none";
-        break;
-    case DispatchFailure::MissingResourceOrState:
-        reason = "missing-resource-or-state";
-        break;
-    case DispatchFailure::SlotAcquire:
-        reason = "slot-acquire";
-        break;
-    case DispatchFailure::ConstantBuffer:
-        reason = "constant-buffer";
-        break;
-    case DispatchFailure::ImmutablePublish:
-        reason = "immutable-publish";
-        break;
-    }
-    return { reason, _descriptorSlots.Snapshot(resetSlotFailures) };
-}
 
 bool DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmd, ID3D12Resource* colour, ID3D12Resource* depth,
                            ID3D12Resource* motion, ID3D12Resource* output, const DlssNrFrameInfo& frame,

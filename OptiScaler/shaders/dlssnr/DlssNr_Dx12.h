@@ -30,8 +30,7 @@
 
 // Bounded descriptor capacity; actual recording/fence completion controls reuse.
 // A model chain reuses its two immutable clamp bindings regardless of pass count.
-// A maximal spatial frame uses 11 codec dispatches. RDR2 can keep materially more than twelve
-// command-list recordings in flight; 264 is a diagnostic 2x capacity while that peak is measured.
+// RDR2/PureDark can keep materially more recordings in flight than the original 132-slot bound.
 #define DLSSNR_NUM_OF_HEAPS 264
 
 class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
@@ -50,15 +49,6 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     ID3D12Resource* _constantBuffers[DLSSNR_NUM_OF_HEAPS] = {};
 
     DlssNr::DescriptorSlots<DLSSNR_NUM_OF_HEAPS> _descriptorSlots;
-    enum class DispatchFailure : uint8_t
-    {
-        None,
-        MissingResourceOrState,
-        SlotAcquire,
-        ConstantBuffer,
-        ImmutablePublish
-    };
-    DispatchFailure _lastDispatchFailure = DispatchFailure::None;
 
     // The shader reads five inputs and writes two, and not every mode uses all of them. Unused slots
     // still need a view bound -- an unbound descriptor is not an empty read, it is a read from
@@ -108,12 +98,6 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     void SetBufferState(ID3D12GraphicsCommandList* cmdList, D3D12_RESOURCE_STATES state);
     ID3D12Resource* Buffer();
     bool CanRender() const;
-    struct DispatchDiagnostics
-    {
-        const char* reason = "none";
-        DlssNr::DescriptorSlots<DLSSNR_NUM_OF_HEAPS>::Diagnostics slots {};
-    };
-    DispatchDiagnostics TakeDispatchDiagnostics(bool resetSlotFailures = false);
     void DiagnosePipeline(unsigned stage, ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params,
                           ID3D12Resource* color, uint32_t flags, bool rr, bool success = true);
     void BeginInputHold(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,

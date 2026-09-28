@@ -124,7 +124,6 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
     RestoreUpscalerResources_Dx12 restoreResources(InParameters);
 
     const bool rayReconstruction = sourceRayReconstruction || upscaler == Upscaler::DLSSD;
-    const uint32_t callerFeatureId = Handle() != nullptr ? Handle()->Id : 0;
     // Specialized schedules own the two seams but keep the same per-feature shader/history lifetime.
     const bool specializedNr = NeuralRendering && NeuralRendering->ProcessSeam(
         InCommandList, InParameters, true, timingQueue, rayReconstruction, submissionEpoch, interop, GetFeatureFlags());
@@ -237,8 +236,7 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
     if (NeuralRendering && !specializedNr && !nrBeforeUpscale && Config::Instance()->DlssNrEnabled.value_or_default())
     {
         pipeline.push_back(MakeDlssNrPass(*NeuralRendering, Device, InCommandList, InParameters, false,
-                                          GetFeatureFlags(), timingQueue, interop, rayReconstruction, submissionEpoch,
-                                          callerFeatureId));
+                                          GetFeatureFlags(), timingQueue, interop, rayReconstruction, submissionEpoch));
     }
 
     if (Magnifier->ShouldRun())
@@ -292,9 +290,8 @@ bool IFeature_Dx12::Evaluate(ID3D12GraphicsCommandList* InCommandList, NVSDK_NGX
                                          rayReconstruction);
     if (nrBeforeUpscale)
     {
-        if (auto* nrInput =
-                PrepareDlssNrInput(*NeuralRendering, Device, InCommandList, InParameters, GetFeatureFlags(),
-                                   timingQueue, interop, rayReconstruction, submissionEpoch, callerFeatureId))
+        if (auto* nrInput = PrepareDlssNrInput(*NeuralRendering, Device, InCommandList, InParameters, GetFeatureFlags(),
+                                               timingQueue, interop, rayReconstruction, submissionEpoch))
             SetUpscalerResource_Dx12(InParameters, NVSDK_NGX_Parameter_Color, nrInput);
     }
     if (diagnoseNr)
