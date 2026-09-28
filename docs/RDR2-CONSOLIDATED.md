@@ -188,6 +188,18 @@ Interpretation:
 Do not alter `RenderMotionScale`, NRSTAB, automatic exposure, or descriptor capacity during this comparison. Those variables are already entangled with earlier debugging and would make the result ambiguous.
 
 
+### Auto-exposure trim verification before any new known-good checkpoint
+
+The saved RDR2 INIs and 23:06 startup log currently agree on `AutoExposureTrim=6.126000`, while the user recalls accepting automatic HDR exposure at the menu default of 5.
+
+Before changing any setting in the next launch, read the menu's **Exposure trim** under Automatic HDR exposure:
+- menu 6.126 => config/UI agree; finish the current FG pacing test first, then separately return trim to 5 if that is the user's preferred accepted value and save/update the known-good hash;
+- menu 5 while startup log says 6.126 => investigate a menu/config mismatch.
+
+Do not change AutoExposureTrim during the prepared flip-metering test.
+
+The 4X flip-metering test supersedes 3X-vs-4X as the first control for the live-only bottom line. A 3X-vs-4X comparison remains useful for the horse-edge interpolation artifact if needed.
+
 ### Live-only bottom horizontal line: FG pacing track
 
 User evidence now separates the bottom horizontal line from NR:
