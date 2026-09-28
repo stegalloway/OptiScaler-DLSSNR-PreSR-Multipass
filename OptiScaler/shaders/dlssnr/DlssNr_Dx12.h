@@ -49,6 +49,15 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     ID3D12Resource* _constantBuffers[DLSSNR_NUM_OF_HEAPS] = {};
 
     DlssNr::DescriptorSlots<DLSSNR_NUM_OF_HEAPS> _descriptorSlots;
+    enum class DispatchFailure : uint8_t
+    {
+        None,
+        MissingResourceOrState,
+        SlotAcquire,
+        ConstantBuffer,
+        ImmutablePublish
+    };
+    DispatchFailure _lastDispatchFailure = DispatchFailure::None;
 
     // The shader reads five inputs and writes two, and not every mode uses all of them. Unused slots
     // still need a view bound -- an unbound descriptor is not an empty read, it is a read from
@@ -98,6 +107,12 @@ class DlssNr_Dx12 : public Shader_Dx12, public DlssNr_Common
     void SetBufferState(ID3D12GraphicsCommandList* cmdList, D3D12_RESOURCE_STATES state);
     ID3D12Resource* Buffer();
     bool CanRender() const;
+    struct DispatchDiagnostics
+    {
+        const char* reason = "none";
+        DlssNr::DescriptorSlots<DLSSNR_NUM_OF_HEAPS>::Diagnostics slots {};
+    };
+    DispatchDiagnostics TakeDispatchDiagnostics(bool resetSlotFailures = false);
     void DiagnosePipeline(unsigned stage, ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params,
                           ID3D12Resource* color, uint32_t flags, bool rr, bool success = true);
     void BeginInputHold(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* params,

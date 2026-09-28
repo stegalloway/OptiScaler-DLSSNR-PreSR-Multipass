@@ -14,8 +14,50 @@ namespace DlssNr
 // A recording owns all of its descriptor/upload slots until reset/destruction and
 // every captured execution completes. Recording trackers are reused, so private
 // data keys and queue fences do not grow with the number of frames.
-template<unsigned Capacity> class DescriptorSlots
+template <unsigned Capacity> class DescriptorSlots
 {
+  public:
+    enum class AcquireFailure : uint8_t
+    {
+        None,
+        InvalidCommandList,
+        InvalidImmutable,
+        ImmutableMismatch,
+        ImmutableClosed,
+        RecordingCapacity,
+        SlotPoolExhausted
+    };
+    struct Diagnostics
+    {
+        unsigned slotsInUse = 0;
+        unsigned activeRecordings = 0;
+        unsigned openRecordings = 0;
+        uint64_t failedAcquires = 0;
+        AcquireFailure lastFailure = AcquireFailure::None;
+    };
+    static const char* FailureName(AcquireFailure failure)
+    {
+        switch (failure)
+        {
+        case AcquireFailure::None:
+            return "none";
+        case AcquireFailure::InvalidCommandList:
+            return "invalid-command-list";
+        case AcquireFailure::InvalidImmutable:
+            return "invalid-immutable";
+        case AcquireFailure::ImmutableMismatch:
+            return "immutable-mismatch";
+        case AcquireFailure::ImmutableClosed:
+            return "immutable-closed";
+        case AcquireFailure::RecordingCapacity:
+            return "recording-capacity";
+        case AcquireFailure::SlotPoolExhausted:
+            return "slot-pool-exhausted";
+        }
+        return "unknown";
+    }
+
+  private:
     static_assert(Capacity > 0 && Capacity <= 65536);
     static constexpr unsigned SlotBits = std::max(1, std::bit_width(Capacity - 1u));
     static constexpr uint32_t SlotMask = (1u << SlotBits) - 1u;
@@ -26,15 +68,27 @@ template<unsigned Capacity> class DescriptorSlots
         ID3D12CommandList* commands = nullptr;
         bool active = false, open = false;
     };
-    struct Slot { std::shared_ptr<Recording> recording; uint32_t generation = 0; };
+    struct Slot
+    {
+        std::shared_ptr<Recording> recording;
+        uint32_t generation = 0;
+    };
     std::array<Slot, Capacity> slots;
     std::vector<std::shared_ptr<Recording>> recordings;
     std::mutex mutex;
     uint32_t next = 0;
-    template<class T> static T* Identity(T* object)
+    uint64_t failedAcquires = 0;
+    AcquireFailure lastFailure = AcquireFailure::None;
+    std::optional<uint32_t> Fail(AcquireFailure failure)
+    {
+        ++failedAcquires;
+        lastFailure = failure;
+        return {};
+    }
+    template <class T> static T* Identity(T* object)
     {
         T* real = nullptr;
-        return object && Util::CheckForRealObject(__FUNCTION__, object, (IUnknown**)&real) ? real : object;
+        return object && Util::CheckForRealObject(__FUNCTION__, object, (IUnknown**) &real) ? real : object;
     }
     void Collect()
     {
@@ -45,26 +99,31 @@ template<unsigned Capacity> class DescriptorSlots
                 recording->commands = nullptr;
             }
         for (auto& slot : slots)
-            if (slot.recording && !slot.recording->active) slot.recording.reset();
+            if (slot.recording && !slot.recording->active)
+                slot.recording.reset();
     }
+
   public:
     std::optional<uint32_t> Acquire(ID3D12GraphicsCommandList* commands, const uint32_t* immutable = nullptr)
     {
-        if (!commands) return {};
+        if (!commands)
+            return Fail(AcquireFailure::InvalidCommandList);
         commands = Identity(commands);
         std::lock_guard lock(mutex);
         Collect();
         if (immutable && *immutable != UINT32_MAX)
         {
             const auto index = *immutable & SlotMask, generation = *immutable >> SlotBits;
-            if (index >= Capacity || generation == 0) return {};
+            if (index >= Capacity || generation == 0)
+                return Fail(AcquireFailure::InvalidImmutable);
             const auto& slot = slots[index];
             if (slot.generation != generation || !slot.recording || !slot.recording->open ||
-                slot.recording->commands != commands) return {};
+                slot.recording->commands != commands)
+                return Fail(AcquireFailure::ImmutableMismatch);
             if (!slot.recording->lifetime.HasOpenRecording(commands))
             {
                 slot.recording->open = false;
-                return {};
+                return Fail(AcquireFailure::ImmutableClosed);
             }
             return index;
         }
@@ -72,7 +131,8 @@ template<unsigned Capacity> class DescriptorSlots
         {
             const auto index = (next + n) % Capacity;
             auto& slot = slots[index];
-            if (slot.recording || slot.generation == MaxGeneration) continue;
+            if (slot.recording || slot.generation == MaxGeneration)
+                continue;
             std::shared_ptr<Recording> recording;
             for (auto& candidate : recordings)
                 if (candidate->active && candidate->open && candidate->commands == commands)
@@ -80,16 +140,24 @@ template<unsigned Capacity> class DescriptorSlots
                     // Stored pointers are identities only. Query with this live caller
                     // object so destruction/address reuse cannot reopen an old generation.
                     if (candidate->lifetime.HasOpenRecording(commands))
-                    { recording = candidate; break; }
+                    {
+                        recording = candidate;
+                        break;
+                    }
                     candidate->open = false;
                 }
             if (!recording)
             {
                 for (auto& candidate : recordings)
-                    if (!candidate->active) { recording = candidate; break; }
+                    if (!candidate->active)
+                    {
+                        recording = candidate;
+                        break;
+                    }
                 if (!recording)
                 {
-                    if (recordings.size() == Capacity) return {};
+                    if (recordings.size() == Capacity)
+                        return Fail(AcquireFailure::RecordingCapacity);
                     recording = std::make_shared<Recording>();
                     recordings.push_back(recording);
                 }
@@ -102,13 +170,37 @@ template<unsigned Capacity> class DescriptorSlots
             next = (index + 1) % Capacity;
             return index;
         }
-        return {}; // Bounded exhaustion skips the affected NR frame; no GPU wait.
+        return Fail(AcquireFailure::SlotPoolExhausted); // Bounded exhaustion skips the affected NR frame; no GPU wait.
+    }
+    Diagnostics Snapshot(bool resetFailures = false)
+    {
+        std::lock_guard lock(mutex);
+        Diagnostics result {};
+        for (const auto& slot : slots)
+            if (slot.recording)
+                ++result.slotsInUse;
+        for (const auto& recording : recordings)
+            if (recording->active)
+            {
+                ++result.activeRecordings;
+                if (recording->open)
+                    ++result.openRecordings;
+            }
+        result.failedAcquires = failedAcquires;
+        result.lastFailure = lastFailure;
+        if (resetFailures)
+        {
+            failedAcquires = 0;
+            lastFailure = AcquireFailure::None;
+        }
+        return result;
     }
     bool PublishImmutable(ID3D12GraphicsCommandList* commands, uint32_t index, uint32_t& immutable)
     {
         commands = Identity(commands);
         std::lock_guard lock(mutex);
-        if (index >= Capacity) return false;
+        if (index >= Capacity)
+            return false;
         const auto& slot = slots[index];
         if (!slot.recording || !slot.recording->active || !slot.recording->open ||
             slot.recording->commands != commands || !slot.recording->lifetime.HasOpenRecording(commands))
@@ -146,17 +238,30 @@ template<unsigned Capacity> class DescriptorSlots
                     pending->push_back(std::move(child));
                 }
             }
-        if (!pending) return {};
+        if (!pending)
+            return {};
         // Children own the tracker implementations, independent of the codec's lifetime.
-        return GpuSubmission([pending](ID3D12CommandQueue* queue)
-        {
-            try { for (auto& child : *pending) child.Complete(queue); }
-            catch (...)
+        return GpuSubmission(
+            [pending](ID3D12CommandQueue* queue)
             {
-                for (auto& child : *pending) try { child.Complete(nullptr); } catch (...) {}
-                throw;
-            }
-        });
+                try
+                {
+                    for (auto& child : *pending)
+                        child.Complete(queue);
+                }
+                catch (...)
+                {
+                    for (auto& child : *pending)
+                        try
+                        {
+                            child.Complete(nullptr);
+                        }
+                        catch (...)
+                        {
+                        }
+                    throw;
+                }
+            });
     }
     bool Idle()
     {
@@ -173,4 +278,4 @@ template<unsigned Capacity> class DescriptorSlots
         Collect();
     }
 };
-}
+} // namespace DlssNr

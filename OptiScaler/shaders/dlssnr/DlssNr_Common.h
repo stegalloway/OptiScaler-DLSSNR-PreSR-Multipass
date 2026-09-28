@@ -98,6 +98,7 @@ struct DlssNrFrameInfo
     // the DX11/Vulkan bridges use their successfully submitted frame counter. A feature created in an
     // epoch is never evaluated until this value changes.
     unsigned long long SubmissionEpoch = 0;
+    unsigned int CallerFeatureId = 0; // diagnostic identity; zero when the caller has no NGX feature handle
     float FrameTimeMs = 16.67f;
 
     // The scale the game multiplied its buffer by for float precision, which DLSS is told so it can
@@ -211,7 +212,7 @@ struct alignas(256) DlssNrConstants
     // to A/B against), 1 = apply the model's edit. Trailing scalar, mirrored in the shader cbuffer.
     uint32_t ApplyModel;
 
-    uint32_t Reserved; // Preserve the shared constant-buffer layout.
+    uint32_t Reserved;   // Preserve the shared constant-buffer layout.
     float ResidualScale; // Scene pre-exposure used to encode/decode the private residual carrier.
     // Optional colour-based final-composition mask. Not the runtime's semantic mask.
     uint32_t SkinProtection;
@@ -306,7 +307,7 @@ static_assert(offsetof(DlssNrConstants, ResidualOutputHeight) == 256);
 enum DlssNrResidualMode : uint32_t
 {
     DlssNrResidualMode_Accumulate = 0, // (edited - original) blended into the reprojected history
-    DlssNrResidualMode_Apply = 1, // base + delta * TransferStrength, after RR+SR
+    DlssNrResidualMode_Apply = 1,      // base + delta * TransferStrength, after RR+SR
     DlssNrResidualMode_VarianceSelect = 2,
     DlssNrResidualMode_MvSelfTest = 3,
 };
@@ -345,5 +346,4 @@ class DlssNr_Common
         constants.EnvironmentColour = config.DlssNrEnvironmentColour.value_or_default();
         return constants;
     }
-
 };

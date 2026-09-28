@@ -81,7 +81,7 @@ DlssNr::InputStates_Dx12 DlssNr::ResolveInputStates_Dx12(bool interop)
 ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
                                NVSDK_NGX_Parameter* parameters, bool beforeUpscale, unsigned int featureFlags,
                                ID3D12CommandQueue* timingQueue, bool interop, bool rayReconstruction,
-                               uint64_t submissionEpoch)
+                               uint64_t submissionEpoch, uint32_t callerFeatureId)
 {
     auto* color = NrResource(parameters, NVSDK_NGX_Parameter_Color, "DLSSD.Color");
     auto* depth = NrResource(parameters, NVSDK_NGX_Parameter_Depth, "DLSSD.Depth");
@@ -95,6 +95,7 @@ ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12
     frame.IndependentCommands = interop;
     frame.RayReconstruction = rayReconstruction;
     frame.SubmissionEpoch = submissionEpoch;
+    frame.CallerFeatureId = callerFeatureId;
     frame.OutputArrivalState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     frame.DepthInverted = (featureFlags & NVSDK_NGX_DLSS_Feature_Flags_DepthInverted) != 0;
     frame.MotionVectorsLowResolution = (featureFlags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) != 0;
@@ -196,7 +197,7 @@ ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12
                 shader.SetBufferState(commandList, D3D12_RESOURCE_STATE_COPY_SOURCE);
                 NrBarrier(commandList, output, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
                 DlssNr::CopyActiveColor(commandList, output, input,
-                                        { (unsigned)input->GetDesc().Width, input->GetDesc().Height });
+                                        { (unsigned) input->GetDesc().Width, input->GetDesc().Height });
                 NrBarrier(commandList, output, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             }
             return true;
@@ -207,7 +208,7 @@ ShaderPass_Dx12 MakeDlssNrPass(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12
 ID3D12Resource* PrepareDlssNrInput(DlssNr_Dx12& shader, ID3D12Device* device, ID3D12GraphicsCommandList* commandList,
                                    NVSDK_NGX_Parameter* parameters, unsigned int featureFlags,
                                    ID3D12CommandQueue* timingQueue, bool interop, bool rayReconstruction,
-                                   uint64_t submissionEpoch)
+                                   uint64_t submissionEpoch, uint32_t callerFeatureId)
 {
     auto* color = NrResource(parameters, NVSDK_NGX_Parameter_Color, "DLSSD.Color");
     if (color == nullptr || !shader.IsInit() || !DlssNr::CanRunBeforeUpscale_Dx12(parameters) ||
@@ -218,7 +219,7 @@ ID3D12Resource* PrepareDlssNrInput(DlssNr_Dx12& shader, ID3D12Device* device, ID
 
     ShaderPipeline_Dx12 pipeline;
     pipeline.push_back(MakeDlssNrPass(shader, device, commandList, parameters, true, featureFlags, timingQueue, interop,
-                                      rayReconstruction, submissionEpoch));
+                                      rayReconstruction, submissionEpoch, callerFeatureId));
     SetupShaderPipeline(pipeline, shader.Buffer());
     if (pipeline.front().inputBuffer != nullptr && DispatchShaderPipeline(pipeline))
         return shader.Buffer();
